@@ -4,6 +4,7 @@ python-dotenv
 langgraph
 langchain
 google-generativeai
+google-genai
 supabase
 pypdf
 tavily-python

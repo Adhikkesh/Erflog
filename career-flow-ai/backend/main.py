@@ -104,6 +104,25 @@ def initialize_state() -> AgentState:
 # EXISTING ENDPOINTS (PRESERVED)
 # -----------------------------------------------------------------------------
 
+# --- Pydantic Models ---
+class AnalyzeRequest(BaseModel):
+    user_input: str
+    context: Optional[dict] = {}
+
+class SearchRequest(BaseModel):
+    query: str
+
+class KitRequest(BaseModel):
+    user_name: str
+    job_title: str
+    job_company: str
+
+class InterviewRequest(BaseModel):
+    session_id: str
+    user_message: str = ""  # Empty for first turn (start interview)
+    job_context: str        # Job title/description
+
+
 @app.get("/")
 async def root():
     return {
