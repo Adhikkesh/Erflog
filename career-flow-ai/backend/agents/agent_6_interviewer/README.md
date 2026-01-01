@@ -14,9 +14,6 @@
 
 ---
 
-## Workflow
-
-![Agent Workflow](image.png)
 
 ## API Endpoint
 
