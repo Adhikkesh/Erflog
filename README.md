@@ -67,14 +67,6 @@
 <br />
 
 ## Demo
-
-<p align="center">
-  <a href="[Demo-Video (Team Erflog).mp4](https://github.com/user-attachments/assets/dbc98028-ed5b-4321-b2d3-73bb54646128)">
-    <img src="https://img.shields.io/badge/▶️_Watch_Demo-Video-red?style=for-the-badge" alt="Watch Demo Video" />
-  </a>
-</p>
-
-
 https://github.com/user-attachments/assets/dbc98028-ed5b-4321-b2d3-73bb54646128
 
 
