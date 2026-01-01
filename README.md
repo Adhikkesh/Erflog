@@ -55,7 +55,34 @@
 
 <br />
 
-## 💡 About The Project
+<p align="center">
+  <a href="#about-the-project">About</a> •
+  <a href="#key-features">Features</a> •
+  <a href="#agents">Agents</a> •
+  <a href="#tech-stack">Tech Stack</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#team">Team</a>
+</p>
+
+<br />
+
+## Demo
+
+<p align="center">
+  <a href="Ai-Verse-Demo-Video (Team Erflog).mp4">
+    <img src="https://img.shields.io/badge/▶️_Watch_Demo-Video-red?style=for-the-badge" alt="Watch Demo Video" />
+  </a>
+</p>
+
+<p align="center">
+  <video src="Ai-Verse-Demo-Video (Team Erflog).mp4" width="100%" controls>
+    Your browser does not support the video tag.
+  </video>
+</p>
+
+<br />
+
+## About The Project
 
 **ERFOLG** is an **Agentic System** that acts as your **24/7 Career Manager**. It doesn't just suggest jobs; it actively bridges the gap between where you are and where you want to be.
 
@@ -69,25 +96,25 @@ The system operates in three intelligent loops:
 
 <br />
 
-### 🎯 The Problem We Solve
+### The Problem We Solve
 
 | Traditional Approach | ERFOLG Approach |
 |:---------------------|:-------|
-| ❌ Manual, endless job scrolling | ✅ **Autonomous** opportunity discovery |
-| ❌ Generic resume for all jobs | ✅ **Tailored, ATS-optimized** resume for every application |
-| ❌ Guessing skill gaps | ✅ **Real-time** gap analysis based on live data |
-| ❌ No learning from rejections | ✅ **Rejection Feedback Loop**: Learns & adapts |
-| ❌ Chatbots forget context | ✅ **Long-term memory** of your career journey |
+| ❌ Manual, endless job scrolling | **Autonomous** opportunity discovery |
+| ❌ Generic resume for all jobs | **Tailored, ATS-optimized** resume for every application |
+| ❌ Guessing skill gaps | **Real-time** gap analysis based on live data |
+| ❌ No learning from rejections |**Rejection Feedback Loop**: Learns & adapts |
+| ❌ Chatbots forget context | **Long-term memory** of your career journey |
 
 <br />
 
-## ⭐ Unique Selling Proposition
+## Unique Selling Proposition
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### 🔄 The Rejection Feedback Loop
+### The Rejection Feedback Loop
 
 The **only system** that turns failure into growth:
 1.  Analyzes **why** you were rejected.
@@ -98,7 +125,7 @@ The **only system** that turns failure into growth:
 </td>
 <td width="50%" valign="top">
 
-### 🤖 True Autonomous Agency
+### True Autonomous Agency
 
 It doesn't wait for you to log in. It walks the walk:
 
@@ -112,7 +139,7 @@ It works while you sleep.
 
 <br />
 
-## 🏗️ Architecture
+## Architecture
 
 <div align="center">
   <img src="Arch.png" alt="ERFOLG Architecture" width="100%" />
@@ -142,7 +169,7 @@ Handling user interactions and API requests.
 
 <br />
 
-## 🔄 Execution Flow
+## Execution Flow
 
 <div align="center">
   <img src="Flow.png" alt="ERFOLG Flow Diagram" width="100%" />
@@ -150,20 +177,20 @@ Handling user interactions and API requests.
 
 <br />
 
-## ✨ Key Features
+## Key Features
 
 | Feature | Description |
 |:-------:|:------------|
-| 📄 <br> **Smart Profile Parsing** | Instantly extracts skills, projects, and experience from PDF resumes and GitHub profiles using advanced OCR and NLP. |
-| 🔍 <br> **Live Market Sentinel** | Actively scans real-time job boards (LinkedIn, Indeed, etc.) to identify high-demand skills and open roles. |
-| 📊 <br> **Dynamic Gap Analysis** | Compares your profile against target roles to pinpoint exact missing skills to the percentage point. |
-| 🗺️ <br> **Adaptive Roadmap** | Generates personalized, day-by-day study plans that update dynamically based on your learning speed. |
-| 📝 <br> **Application Kit** | Auto-tailors resumes and drafts custom cover letters for every opportunity, highlighting relevant experience. |
-| 🔬 <br> **Rejection Investigator** | Analyzes rejection feedback and updates your roadmap. *Rejected due to missing AWS?* It adds AWS to your study plan. |
+| <br> **Smart Profile Parsing** | Instantly extracts skills, projects, and experience from PDF resumes and GitHub profiles using advanced OCR and NLP. |
+| <br> **Live Market Sentinel** | Actively scans real-time job boards (LinkedIn, Indeed, etc.) to identify high-demand skills and open roles. |
+| <br> **Dynamic Gap Analysis** | Compares your profile against target roles to pinpoint exact missing skills to the percentage point. |
+| <br> **Adaptive Roadmap** | Generates personalized, day-by-day study plans that update dynamically based on your learning speed. |
+| <br> **Application Kit** | Auto-tailors resumes and drafts custom cover letters for every opportunity, highlighting relevant experience. |
+| <br> **Rejection Investigator** | Analyzes rejection feedback and updates your roadmap. *Rejected due to missing AWS?* It adds AWS to your study plan. |
 
 <br />
 
-## 🤖 The Agents
+## The Agents
 
 | Agent | Name | Role | Documentation |
 |:-----:|:-----|:-----|:-------------:|
@@ -174,7 +201,7 @@ Handling user interactions and API requests.
 
 <br />
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 <div align="center">
 
@@ -187,7 +214,7 @@ Handling user interactions and API requests.
 
 <br />
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.11+
