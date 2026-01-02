@@ -15,12 +15,55 @@ import {
   Sparkles,
   Building2,
   RefreshCw,
-  Radio, // <--- New Icon for Live Mode
+  Radio,
   Github,
+  Terminal,
+  Loader2,
+  Activity
 } from "lucide-react";
 import { useSession } from "@/lib/SessionContext";
 import type { StrategyJobMatch } from "@/lib/api";
-import { checkWatchdog } from "@/lib/api"; 
+import { checkWatchdog } from "@/lib/api";
+
+// --- NEW COMPONENT: LIVE ACTIVITY FEED ---
+// This shows the logs directly on the dashboard during Live Sync
+function LiveActivityFeed({ logs }: { logs: AgentLog[] }) {
+  // Show only the last 3 logs to keep it clean
+  const recentLogs = logs.slice(-3);
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, height: 0 }} 
+      animate={{ opacity: 1, height: "auto" }} 
+      exit={{ opacity: 0, height: 0 }}
+      className="mb-8 rounded-xl border bg-black/90 p-4 text-sm font-mono text-green-400 shadow-lg overflow-hidden"
+      style={{ borderColor: "#333" }}
+    >
+      <div className="flex items-center gap-2 mb-3 border-b border-gray-800 pb-2 text-xs text-gray-500 uppercase tracking-wider">
+        <Activity className="w-3 h-3 animate-pulse text-red-500" />
+        Live Neural Link Active
+      </div>
+      <div className="space-y-2">
+        {recentLogs.map((log) => (
+          <motion.div 
+            key={log.id} 
+            initial={{ opacity: 0, x: -10 }} 
+            animate={{ opacity: 1, x: 0 }}
+            className="flex items-start gap-2"
+          >
+            <span className="text-gray-600">[{new Date().toLocaleTimeString().split(" ")[0]}]</span>
+            <span className={log.type === 'success' ? 'text-green-400' : 'text-blue-300'}>
+              {log.type === 'success' ? '✓' : '>'} {log.message}
+            </span>
+          </motion.div>
+        ))}
+        {recentLogs.length === 0 && (
+          <div className="text-gray-600 italic">Listening for code changes...</div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
 
 // --- STATIC DATA ---
 const SIMULATION_STEPS = [
@@ -243,7 +286,6 @@ export default function Dashboard() {
       });
     }, 1200);
 
-    // Run once safely
     if (currentStep === 0 && SIMULATION_STEPS.length > 0 && !hasStartedSimulation.current) {
       hasStartedSimulation.current = true;
       const firstStep = SIMULATION_STEPS[0];
@@ -263,12 +305,11 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [isInitializing, apiComplete, currentStep, processMode]);
 
-  // 3. --- LIVE WATCHDOG POLLING EFFECT ---
+  // 3. --- LIVE WATCHDOG POLLING EFFECT (ENHANCED) ---
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
     if (isLiveMode && sessionId) {
-      // Switch mode to stop simulation UI
       setProcessMode('sync');
       
       // Log Start
@@ -288,67 +329,90 @@ export default function Dashboard() {
           const result = await checkWatchdog(sessionId, lastSha);
 
           if (result.status === "updated" && result.new_sha && result.new_sha !== lastSha) {
-            // NEW CODE DETECTED!
             setLastSha(result.new_sha);
 
+            // 1. Log Detection Immediately
             setAgentLogs(prev => [...prev, {
               id: `live-detect-${Date.now()}`,
               agent: "Watchdog",
-              message: `⚡ CHANGE DETECTED in ${result.repo_name}! Analyzing...`,
+              message: `⚡ CHANGE DETECTED in ${result.repo_name}!`,
               type: "success",
               delay: 0
             }]);
+
+            // 2. Add "Filler" logs to show processing steps (Visual Feedback)
+            setTimeout(() => {
+               setAgentLogs(prev => [...prev, {
+                id: `live-analysis-${Date.now()}`,
+                agent: "Watchdog",
+                message: `🧠 Analyzing code semantics and diffs...`,
+                type: "agent",
+                delay: 0
+              }]);
+            }, 500);
+
+            setTimeout(() => {
+               setAgentLogs(prev => [...prev, {
+                id: `live-update-db-${Date.now()}`,
+                agent: "Watchdog",
+                message: `💾 Updating User Knowledge Graph...`,
+                type: "agent",
+                delay: 0
+              }]);
+            }, 1200);
             
             if (result.updated_skills && result.updated_skills.length > 0) {
-              // 1. EXTRACT FRESH SKILLS (The ones just found)
-              // We assume the backend puts new skills at the start of the list
               const freshSkills = result.updated_skills.slice(0, 5); 
               
-              setAgentLogs(prev => [...prev, {
-                id: `live-skills-${Date.now()}`,
-                agent: "Watchdog",
-                message: `✓ Extracted: ${freshSkills.join(", ")}...`,
-                type: "success",
-                delay: 200
-              }]);
+              setTimeout(() => {
+                setAgentLogs(prev => [...prev, {
+                  id: `live-skills-${Date.now()}`,
+                  agent: "Watchdog",
+                  message: `✓ Extracted: ${freshSkills.join(", ")}...`,
+                  type: "success",
+                  delay: 0
+                }]);
+              }, 2000);
 
-              // 2. CONSTRUCT BOOSTED QUERY (The Magic Fix)
-              // We repeat the fresh skills to give them 2x/3x weight in the vector search.
-              // We also add specific "Job Title" keywords based on the skills.
+              // Clear jobs to show refresh is happening
+              setJobs([]); 
+
+              // Boosted Query
               const boostedQuery = `
-                Urgent requirement for ${freshSkills.join(", ")}. 
-                Role: ${freshSkills[0]} Developer or Specialist.
-                Must have skills: ${freshSkills.join(", ")}.
-                Additional context: ${result.updated_skills.slice(5, 15).join(", ")}
+                Job Title: ${freshSkills[0]} Engineer or Specialist.
+                Key Requirements: ${freshSkills.join(", ")}.
+                Domain: ${freshSkills[0]} and ${freshSkills[1]}.
+                Focus: Strictly related to ${freshSkills[0]}.
               `.replace(/\s+/g, " ").trim();
 
-              console.log("🚀 Sending Boosted Query:", boostedQuery);
+              console.log("🚀 Sending PURE Query:", boostedQuery);
 
-              setAgentLogs(prev => [...prev, {
-                id: `live-jobs-start-${Date.now()}`,
-                agent: "Agent 3",
-                message: `Pivoting strategy towards: ${freshSkills[0]}...`, // User feedback
-                type: "agent",
-                delay: 400
-              }]);
+              setTimeout(async () => {
+                setAgentLogs(prev => [...prev, {
+                  id: `live-jobs-start-${Date.now()}`,
+                  agent: "Agent 3",
+                  message: `🎯 PIVOTING STRATEGY: Focusing 100% on ${freshSkills[0]}...`,
+                  type: "agent",
+                  delay: 0
+                }]);
 
-              await runStrategy(boostedQuery, true);
+                await runStrategy(boostedQuery, true);
 
-              setAgentLogs(prev => [...prev, {
-                id: `live-jobs-end-${Date.now()}`,
-                agent: "System",
-                message: "✓ Strategy Board Updated.",
-                type: "success",
-                delay: 600
-              }]);
+                setAgentLogs(prev => [...prev, {
+                  id: `live-jobs-end-${Date.now()}`,
+                  agent: "System",
+                  message: "✓ Strategy Board Updated.",
+                  type: "success",
+                  delay: 0
+                }]);
+              }, 2500); // Wait for animations
             }
           } 
         } catch (e) {
           console.error("Watchdog polling error", e);
         }
-      }, 10000); // Check every 10 seconds
+      }, 10000); 
     } else if (!isLiveMode && lastSha) {
-       // Stop logic log
        setAgentLogs(prev => [...prev, {
         id: `live-stop-${Date.now()}`,
         agent: "System",
@@ -441,6 +505,7 @@ export default function Dashboard() {
 
       <div className="py-12 px-8">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: showJobs ? 1 : 0, y: showJobs ? 0 : 20 }} className="max-w-7xl mx-auto mb-12">
+          
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="font-serif-bold text-4xl text-ink mb-2">Strategy Board</h1>
@@ -457,7 +522,7 @@ export default function Dashboard() {
                     : "hover:bg-gray-50 border-[#E5E0D8]"
                 }`}
               >
-                <Radio className={`w-4 h-4 ${isLiveMode ? "animate-ping" : ""}`} />
+                {isLiveMode ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
                 {isLiveMode ? "Live Listening..." : "Start Live Sync"}
               </button>
 
@@ -469,6 +534,13 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
+
+          {/* --- RENDER LIVE ACTIVITY FEED IF ACTIVE --- */}
+          <AnimatePresence>
+            {isLiveMode && (
+              <LiveActivityFeed logs={agentLogs} />
+            )}
+          </AnimatePresence>
 
           <div className="grid grid-cols-3 gap-6 mb-8">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-surface rounded-xl border p-6" style={{ borderColor: "#E5E0D8" }}>
