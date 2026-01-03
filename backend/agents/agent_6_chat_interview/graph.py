@@ -1,6 +1,6 @@
+import os
 import json
 import datetime
-import os
 from typing import TypedDict, List, Literal, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -172,43 +172,3 @@ def add_user_message(state: dict, user_text: str) -> dict:
         **state,
         "messages": state.get("messages", []) + [HumanMessage(content=user_text)]
     }
-
-def run_interview_turn(session_id: str, user_message: str, job_context: str) -> dict:
-    """
-    Run a single interview turn. Returns the AI response and current state.
-    """
-    # Create a simple context from job_context string
-    context = {
-        "job": {"title": job_context, "company": "Company"},
-        "user": {"name": "Candidate", "skills": []},
-        "gaps": {"missing_skills": [], "suggested_questions": []},
-        "user_id": session_id,
-        "job_id": "1"
-    }
-    
-    thread_id = f"interview_{session_id}"
-    config = {"configurable": {"thread_id": thread_id}}
-    
-    # Get or create initial state
-    try:
-        # Try to get existing state from checkpointer
-        state = create_initial_state(context)
-        if user_message:
-            state = add_user_message(state, user_message)
-        
-        result = interview_graph.invoke(state, config=config)
-        
-        ai_response = result["messages"][-1].content if result["messages"] else "Hello!"
-        
-        return {
-            "response": ai_response,
-            "stage": result.get("stage", "intro"),
-            "message_count": len(result.get("messages", []))
-        }
-    except Exception as e:
-        print(f"Interview error: {e}")
-        return {
-            "response": "I apologize, there was an error. Could you repeat that?",
-            "stage": "intro",
-            "message_count": 0
-        }
