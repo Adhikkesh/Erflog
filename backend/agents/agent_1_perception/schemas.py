@@ -1,6 +1,7 @@
 # backend/agents/agent_1_perception/schemas.py
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import Optional, List, Dict, Any
+
 
 class ProfileResponse(BaseModel):
     user_id: str
@@ -10,10 +11,27 @@ class ProfileResponse(BaseModel):
     skills: List[str]
     experience_summary: Optional[str]
 
-class GithubSyncRequest(BaseModel):
-    user_id: str # Now we use user_id, not session_id (Autonomy requirement)
-    github_url: str
 
-class WatchdogRequest(BaseModel):
+class GithubSyncResponse(BaseModel):
+    """Response from GitHub sync operation"""
+    updated_skills: List[str]
+    analysis: Optional[Dict[str, Any]] = None
+
+
+class OnboardingRequest(BaseModel):
+    """Request body for user onboarding - all fields optional"""
+    github_url: Optional[str] = None  # e.g., https://github.com/username
+    linkedin_url: Optional[str] = None  # e.g., https://linkedin.com/in/username
+    target_roles: Optional[List[str]] = None  # e.g., ["Software Engineer", "ML Engineer"]
+
+
+class OnboardingResponse(BaseModel):
+    """Response from onboarding update"""
+    status: str
+    updated_fields: List[str]
     user_id: str
+
+
+class WatchdogCheckRequest(BaseModel):
+    """Request for watchdog polling (used by frontend)"""
     last_known_sha: Optional[str] = None
