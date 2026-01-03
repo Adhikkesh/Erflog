@@ -177,7 +177,7 @@ def analyze_code_context(code_context: str) -> Optional[Dict[str, Any]]:
     
     # 1. Setup LLM
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         temperature=0.2,
         google_api_key=api_key
     )
