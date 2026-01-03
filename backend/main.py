@@ -5,33 +5,32 @@ FastAPI Server for Agentic AI Backend with Multi-Agent Workflow
 
 import os
 import uuid
-import tempfile
-import shutil
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict
 from dotenv import load_dotenv
 
 # Load env FIRST before any other imports
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+# Import auth dependency
+from auth.dependencies import get_current_user
 
 # --- IMPORTS FOR AGENTS & DB ---
 from core.state import AgentState
 from core.db import db_manager  # Database connection
 
-# Import routers
+# Import routers (The decoupled way)
+from agents.agent_1_perception.router import router as agent1_router 
 from agents.agent_4_operative import agent4_router
 
-# Import Agent Nodes/Functions
-from agents.agent_1_perception.graph import perception_node, app as perception_agent
-from agents.agent_1_perception.github_watchdog import fetch_and_analyze_github  # <--- NEW IMPORT
+# Import Agent Nodes/Functions (Only for agents NOT yet decoupled)
 from agents.agent_2_market.graph import market_scan_node
 from agents.agent_3_strategist.graph import search_jobs as strategist_search_jobs, process_career_strategy
-from agents.agent_6_interviewer.graph import run_interview_turn
+from agents.agent_6_chat_interview.graph import run_interview_turn
 
 app = FastAPI(
     title="Career Flow AI API",
@@ -49,6 +48,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(agent1_router) # Mounts /api/perception/*
 app.include_router(agent4_router)
 
 # -----------------------------------------------------------------------------
@@ -70,8 +70,8 @@ class KitRequest(BaseModel):
     user_name: str
     job_title: str
     job_company: str
-    session_id: Optional[str] = None  # Add session_id support
-    job_description: Optional[str] = None  # Add job description
+    session_id: Optional[str] = None 
+    job_description: Optional[str] = None 
 
 class SessionRequest(BaseModel):
     session_id: str
@@ -80,21 +80,16 @@ class MarketScanRequest(BaseModel):
     session_id: str
 
 class StrategyRequest(BaseModel):
-    query: str  # Skills/experience to search for jobs
+    query: str 
 
 class ApplicationRequest(BaseModel):
     session_id: str
     job_description: Optional[str] = None
 
 class InterviewRequest(BaseModel):
-    session_id: str         # Unique session identifier for conversation state
-    user_message: str = ""  # Empty for first turn (start interview)
-    job_context: str        # Job title/description
-
-# --- NEW MODEL FOR GITHUB SYNC ---
-class GithubSyncRequest(BaseModel):
-    session_id: str
-    github_url: str
+    session_id: str         
+    user_message: str = ""  
+    job_context: str        
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -127,12 +122,34 @@ async def root():
         "version": "2.0.0",
         "agents_active": 6,
         "endpoints": {
-            "workflow": ["/api/init", "/api/upload-resume", "/api/market-scan", "/api/generate-strategy", "/api/generate-application"],
+            # Updated to show the new Perception endpoints
+            "perception": [
+                "/api/perception/upload-resume", 
+                "/api/perception/sync-github", 
+                "/api/perception/onboarding", 
+                "/api/perception/watchdog/check", 
+                "/api/perception/verify/quiz", 
+                "/api/perception/profile"
+            ],
+            "workflow": ["/api/init", "/api/market-scan", "/api/generate-strategy", "/api/generate-application"],
             "interview": "/api/interview/chat",
             "legacy": ["/api/match", "/api/generate-kit"],
             "agent4": "/agent4",
-            "watchdog": "/api/sync-github" # <--- Added to documentation
+            "auth": "/api/me"
         }
+    }
+
+
+@app.get("/api/me")
+async def get_me(user=Depends(get_current_user)):
+    """
+    Protected endpoint - returns current user info from JWT.
+    Requires valid Supabase JWT in Authorization header.
+    """
+    return {
+        "user_id": user["sub"],
+        "email": user.get("email"),
+        "provider": user.get("app_metadata", {}).get("provider")
     }
 
 
@@ -202,7 +219,7 @@ async def generate_kit_endpoint(request: KitRequest):
             "experience_summary": perception_results.get("experience_summary", ""),
             "education": perception_results.get("education", ""),
             "resume": perception_results.get("resume_json", {}),
-            "user_id": user_id  # CRITICAL: Include user_id here!
+            "user_id": user_id 
         }
         print(f"[Generate Kit] Found user_id from session: {user_id}")
     
@@ -214,7 +231,7 @@ async def generate_kit_endpoint(request: KitRequest):
             
             if response.data:
                 profile = response.data[0]
-                user_id = profile.get("user_id")  # This is the UUID that matches the PDF in storage!
+                user_id = profile.get("user_id") 
                 user_profile = {
                     "name": profile.get("name") or request.user_name,
                     "email": profile.get("email", ""),
@@ -222,7 +239,7 @@ async def generate_kit_endpoint(request: KitRequest):
                     "experience_summary": profile.get("experience_summary", ""),
                     "education": profile.get("education", ""),
                     "resume": profile.get("resume_json", {}),
-                    "user_id": user_id  # CRITICAL: This must match the PDF filename in storage!
+                    "user_id": user_id 
                 }
                 print(f"[Generate Kit] Found user_id from DB: {user_id}")
                 print(f"[Generate Kit] Resume URL in DB: {profile.get('resume_url', 'N/A')}")
@@ -261,7 +278,6 @@ async def generate_kit_endpoint(request: KitRequest):
         print(f"[Generate Kit] ✅ Resume generated!")
         print(f"   PDF URL: {pdf_url}")
         
-        # If we have a PDF URL, return success
         if pdf_url:
             return JSONResponse(
                 status_code=200,
@@ -312,208 +328,8 @@ async def init_session():
     return {"status": "success", "session_id": session_id, "message": "Session initialized."}
 
 
-@app.post("/api/upload-resume")
-async def upload_resume(file: UploadFile = File(...), session_id: str = Form(...)):
-    """Upload a resume PDF and run Agent 1 (Perception)."""
-    state = get_session(session_id)
-    
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
-    
-    try:
-        temp_dir = Path(tempfile.gettempdir()) / "career_flow_uploads"
-        temp_dir.mkdir(exist_ok=True)
-        pdf_filename = f"{session_id}_{file.filename}"
-        pdf_path = temp_dir / pdf_filename
-        
-        with open(pdf_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        print(f"[Orchestrator] Resume saved: {pdf_path}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-    
-    state["context"]["pdf_path"] = str(pdf_path)
-    
-    try:
-        print(f"[Orchestrator] Running Agent 1 (Perception) for session: {session_id}")
-        updated_state = perception_node(state)
-        SESSIONS[session_id].update(updated_state)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Perception Agent failed: {str(e)}")
-    
-    perception_results = SESSIONS[session_id].get("results", {}).get("perception", {})
-    return {
-        "status": "success",
-        "session_id": session_id,
-        "profile": {
-            "name": perception_results.get("name"),
-            "email": perception_results.get("email"),
-            "skills": SESSIONS[session_id].get("skills", []),
-            "experience_summary": perception_results.get("experience_summary"),
-            "education": perception_results.get("education"),
-            "user_id": SESSIONS[session_id].get("user_id")
-        }
-    }
+# NOTE: /api/watchdog/check REMOVED. Use /api/perception/watchdog/check instead.
 
-@app.post("/api/sync-github")
-async def sync_github(request: GithubSyncRequest):
-    """
-    1. Analyzes the GitHub Repo using Agent 1's Watchdog.
-    2. Updates the User Profile in Supabase/Session.
-    3. CRITICAL: Puts NEW skills at the FRONT of the list so Agent 3 prioritizes them.
-    """
-    print(f"🚀 Syncing GitHub for session: {request.session_id}")
-    
-    # 1. Run the Watchdog
-    analysis = fetch_and_analyze_github(request.github_url)
-    
-    if not analysis:
-        print("⚠️ GitHub analysis failed or returned empty.")
-        return {"status": "failed", "message": "Could not analyze repo", "analysis": {}}
-
-    new_skills = [item['skill'] for item in analysis.get('detected_skills', [])]
-    print(f"✅ Watchdog found new skills: {new_skills}")
-
-    # 2. Smart Merge: New Skills First!
-    # We want the search query to look like: "Pandas, Scikit-Learn, Python, ... Spring, Java"
-    # This forces the AI to see the Data Science context first.
-    
-    current_skills = []
-    if request.session_id in SESSIONS:
-        current_skills = SESSIONS[request.session_id].get("skills", [])
-    
-    # Filter out duplicates from OLD list, keep NEW list order intact
-    old_unique_skills = [s for s in current_skills if s not in new_skills]
-    
-    # COMBINE: NEW + OLD
-    final_skills = new_skills + old_unique_skills
-    
-    # Update Session
-    if request.session_id in SESSIONS:
-        SESSIONS[request.session_id]["skills"] = final_skills
-        print(f"🔄 Session skills updated: {len(current_skills)} -> {len(final_skills)} (New skills prioritized)")
-
-    # 3. Update Database (Persistent Storage)
-    client = db_manager.get_client()
-    try:
-        print("🔍 DB: finding most recent profile to update...")
-        response = client.table("profiles").select("*").order("created_at", desc=True).limit(1).execute()
-
-        if response.data:
-            profile = response.data[0]
-            profile_id = profile['id']
-            
-            # DB Merge (Repeat logic to be safe)
-            db_existing_skills = profile.get('skills', []) or []
-            db_old_unique = [s for s in db_existing_skills if s not in new_skills]
-            db_final_skills = new_skills + db_old_unique
-            
-            # Update the DB
-            client.table("profiles").update({
-                "skills": db_final_skills
-            }).eq("id", profile_id).execute()
-            
-            print(f"💾 Updated Profile {profile_id} in DB with {len(db_final_skills)} total skills.")
-            
-            return {
-                "status": "success", 
-                "analysis": analysis,
-                "updated_skills": db_final_skills # Returning ordered list
-            }
-        else:
-             print("⚠️ No profile found in DB.")
-
-    except Exception as e:
-        print(f"❌ DB Update Error (Non-fatal): {e}")
-        # Return success with the session-based skills
-        return {"status": "partial_success", "analysis": analysis, "updated_skills": final_skills}
-
-    return {"status": "success", "analysis": analysis, "updated_skills": final_skills}
-
-# Add this model near the top with others
-class WatchdogCheckRequest(BaseModel):
-    session_id: str
-    last_known_sha: Optional[str] = None # To avoid re-analyzing the same commit
-
-
-# In backend/main.py
-
-@app.post("/api/watchdog/check")
-async def watchdog_check(request: WatchdogCheckRequest):
-    """
-    Polls GitHub. Uses SERVER MEMORY to strictly prevent re-scanning the same commit.
-    """
-    from agents.agent_1_perception.github_watchdog import get_latest_user_activity, fetch_and_analyze_github
-    
-    # 1. Check GitHub for latest activity
-    activity = get_latest_user_activity("dummy") 
-    
-    if not activity:
-        return {"status": "error", "message": "Could not fetch GitHub activity"}
-        
-    current_sha = activity['latest_commit_sha']
-    repo_name = activity['repo_name']
-    
-    # --- BULLETPROOF FIX: Check Server Memory ---
-    # We check if we already processed this SHA for this session in RAM.
-    last_processed_sha = None
-    if request.session_id in SESSIONS:
-        last_processed_sha = SESSIONS[request.session_id].get("last_watchdog_sha")
-
-    # If Frontend knows it OR Backend remembers it -> STOP.
-    if request.last_known_sha == current_sha or last_processed_sha == current_sha:
-        return {"status": "no_change", "repo_name": repo_name}
-        
-    # 3. If we are here, it is genuinely NEW.
-    print(f"🔔 LIVE WATCHDOG: New activity detected in {repo_name} (SHA: {current_sha[:7]})")
-    
-    # MEMORIZE IT NOW (Before analysis, to prevent race conditions)
-    if request.session_id in SESSIONS:
-        SESSIONS[request.session_id]["last_watchdog_sha"] = current_sha
-    
-    # 4. Run Analysis
-    analysis = fetch_and_analyze_github(activity['repo_url'])
-    
-    if not analysis:
-        # Return updated status so frontend syncs up
-        return {
-            "status": "updated", 
-            "repo_name": repo_name, 
-            "new_sha": current_sha,
-            "updated_skills": [],
-            "analysis": {}
-        }
-
-    new_skills = [item['skill'] for item in analysis.get('detected_skills', [])]
-    
-    # 5. Update Database
-    client = db_manager.get_client()
-    final_skills = new_skills
-    
-    try:
-        if request.session_id in SESSIONS:
-            existing = SESSIONS[request.session_id].get("skills", [])
-            unique_old = [s for s in existing if s not in new_skills]
-            final_skills = new_skills + unique_old 
-            SESSIONS[request.session_id]["skills"] = final_skills
-            
-        response = client.table("profiles").select("*").order("created_at", desc=True).limit(1).execute()
-        if response.data:
-            profile_id = response.data[0]['id']
-            client.table("profiles").update({"skills": final_skills}).eq("id", profile_id).execute()
-            
-    except Exception as e:
-        print(f"❌ DB Error: {e}")
-
-    return {
-        "status": "updated",
-        "repo_name": repo_name,
-        "new_sha": current_sha,
-        "updated_skills": final_skills,
-        "analysis": analysis
-    }
 
 @app.post("/api/market-scan")
 async def market_scan(request: MarketScanRequest):
@@ -601,7 +417,8 @@ async def generate_application(request: ApplicationRequest):
             "pdf_path": operative_result.get("pdf_path"),
             "pdf_url": operative_result.get("pdf_url"),
             "recruiter_email": operative_result.get("recruiter_email"),
-            "application_status": operative_result.get("application_status"),            "rewritten_content": operative_result.get("rewritten_content")
+            "application_status": operative_result.get("application_status"),            
+            "rewritten_content": operative_result.get("rewritten_content")
         }
     }
 

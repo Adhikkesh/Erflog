@@ -22,3 +22,6 @@ pdfminer.six
 spacy
 reportlab
 # en_core_web_sm - Install separately with: python -m spacy download en_core_web_sm
+python-jose[cryptography]==3.3.0
+httpx==0.27.0
+PyMuPDF==1.24.14
