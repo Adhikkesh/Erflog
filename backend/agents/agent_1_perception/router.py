@@ -1,4 +1,5 @@
 # backend/agents/agent_1_perception/router.py
+from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from auth.dependencies import get_current_user
 from .service import agent1_service
@@ -11,8 +12,16 @@ from .schemas import (
     QuizRequest,
     QuizResponse,
     QuizSubmission,
-    QuizResult
+    QuizResult,
+    # New onboarding schemas
+    OnboardingCompleteRequest,
+    OnboardingStatusResponse,
+    OnboardingQuizSubmission,
+    OnboardingQuizResponse,
+    DashboardInsightsResponse
 )
+from typing import List, Optional
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/perception", tags=["Agent 1: Perception"])
 
@@ -108,9 +117,10 @@ async def update_onboarding(
 # WATCHDOG POLLING
 # =============================================================================
 
-@router.post("/watchdog/check")
+@router.get("/watchdog/check")
 async def watchdog_check(
-    request: WatchdogCheckRequest,
+    session_id: Optional[str] = None,
+    last_sha: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
     """
@@ -118,13 +128,17 @@ async def watchdog_check(
     
     Efficient check using commit SHA comparison.
     Returns full analysis if new activity detected.
+    
+    Query params:
+        - session_id: Optional session identifier (not used currently)
+        - last_sha: Last known commit SHA
     """
     user_id = user["sub"]
     
     try:
         result = await agent1_service.check_github_activity(
             user_id=user_id,
-            last_known_sha=request.last_known_sha
+            last_known_sha=last_sha
         )
         return result
     except HTTPException:
@@ -235,16 +249,28 @@ async def submit_quiz_answer(
 async def get_profile(user: dict = Depends(get_current_user)):
     """
     Get current user's profile with skills metadata (Protected)
+    Returns null profile data if user hasn't completed onboarding yet.
     """
     user_id = user["sub"]
     
     try:
-        response = agent1_service.supabase.table("profiles").select(
-            "user_id, name, email, skills, skills_metadata, resume_url, experience_summary"
-        ).eq("user_id", user_id).execute()
+        response = agent1_service.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
         
         if not response.data:
-            raise HTTPException(404, "Profile not found. Please upload your resume first.")
+            # New user - return empty profile structure
+            return {
+                "status": "success",
+                "profile": {
+                    "user_id": user_id,
+                    "name": user.get("user_metadata", {}).get("full_name") or user.get("email"),
+                    "email": user.get("email"),
+                    "resume_url": None,
+                    "skills": [],
+                    "skills_metadata": {},
+                    "experience_summary": None,
+                    "needs_onboarding": True
+                }
+            }
         
         profile = response.data[0]
         
@@ -257,9 +283,179 @@ async def get_profile(user: dict = Depends(get_current_user)):
                 "resume_url": profile.get("resume_url"),
                 "skills": profile.get("skills", []),
                 "skills_metadata": profile.get("skills_metadata", {}),
-                "experience_summary": profile.get("experience_summary")
+                "experience_summary": profile.get("experience_summary"),
+                "needs_onboarding": False
             }
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# =============================================================================
+# NEW ONBOARDING FLOW ENDPOINTS
+# =============================================================================
+
+@router.get("/onboarding/status")
+async def get_onboarding_status(user: dict = Depends(get_current_user)):
+    """
+    Check if user needs to complete onboarding (Protected)
+    
+    Returns:
+    - needs_onboarding: True if user hasn't completed onboarding
+    - onboarding_step: Which step they're on (1-4)
+    - profile_complete: Whether basic profile info is filled
+    - has_resume: Whether resume was uploaded
+    - has_quiz_completed: Whether quiz was completed
+    """
+    user_id = user["sub"]
+    
+    try:
+        result = await agent1_service.check_onboarding_status(user_id)
+        return {"status": "success", **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.post("/onboarding/complete")
+async def complete_onboarding(
+    request: OnboardingCompleteRequest,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Complete onboarding profile setup (Protected)
+    
+    Save user profile data including skills, target roles, education.
+    After this, user should complete the quiz.
+    """
+    user_id = user["sub"]
+    
+    try:
+        # Convert education items to dicts
+        education_dicts = [
+            {
+                "institution": edu.institution,
+                "degree": edu.degree,
+                "course": edu.course,
+                "year": edu.year
+            }
+            for edu in request.education
+        ]
+        
+        result = await agent1_service.complete_onboarding(
+            user_id=user_id,
+            name=request.name,
+            email=request.email,
+            skills=request.skills,
+            target_roles=request.target_roles,
+            education=education_dicts,
+            experience_summary=request.experience_summary,
+            github_url=request.github_url,
+            linkedin_url=request.linkedin_url,
+            has_resume=request.has_resume
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class GenerateQuizRequest(BaseModel):
+    """Request body for generating onboarding quiz"""
+    skills: Optional[List[str]] = None
+    target_roles: Optional[List[str]] = None
+
+
+@router.post("/onboarding/quiz/generate")
+async def generate_onboarding_quiz(
+    request: GenerateQuizRequest,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Generate 5 MCQ questions for onboarding quiz (Protected)
+    
+    Questions are based on user's skills and target roles.
+    Returns questions with correct_index for stateless verification.
+    """
+    user_id = user["sub"]
+    
+    try:
+        result = await agent1_service.generate_onboarding_quiz(
+            user_id=user_id,
+            skills=request.skills or [],
+            target_roles=request.target_roles or []
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.post("/onboarding/quiz/submit")
+async def submit_onboarding_quiz(
+    request: OnboardingQuizSubmission,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Submit onboarding quiz answers (Protected)
+    
+    Marks onboarding as complete and calculates score.
+    """
+    user_id = user["sub"]
+    
+    try:
+        # Convert answers to dicts
+        answers_dicts = [
+            {
+                "question_id": a.question_id,
+                "selected_index": a.selected_index,
+                "correct_index": a.correct_index
+            }
+            for a in request.answers
+        ]
+        
+        result = await agent1_service.submit_onboarding_quiz(
+            user_id=user_id,
+            answers=answers_dicts
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# =============================================================================
+# DASHBOARD INSIGHTS ENDPOINT
+# =============================================================================
+
+@router.get("/dashboard")
+async def get_dashboard_insights(user: dict = Depends(get_current_user)):
+    """
+    Get dashboard insights for authenticated users (Protected)
+    
+    Returns:
+    - user_name: User's display name
+    - profile_strength: 0-100 completion score
+    - top_jobs: Top 3 job matches for today
+    - hot_skills: Trending skills to learn
+    - github_insights: Analysis of recent GitHub activity
+    - news_cards: Industry news and insights
+    - agent_status: Current AI agent status
+    """
+    user_id = user["sub"]
+    
+    try:
+        result = await agent1_service.get_dashboard_insights(user_id)
+        return {"status": "success", **result}
     except HTTPException:
         raise
     except Exception as e:

@@ -9,7 +9,7 @@ Agent 1 Perception - Helper Tools (LangChain Edition)
 
 import os
 import json
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, List
 from pypdf import PdfReader
 from supabase import create_client
 
@@ -295,4 +295,126 @@ def generate_skill_quiz(skill_name: str, level: str = "intermediate") -> Optiona
         
     except Exception as e:
         print(f"[Quiz] Generation Error: {e}")
+        return None
+
+
+# =============================================================================
+# ONBOARDING: Generate 5 Quiz Questions
+# =============================================================================
+
+def generate_onboarding_questions(
+    skills: List[str], 
+    target_roles: List[str]
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Generate 5 MCQ questions for onboarding based on user's skills and target roles.
+    
+    Args:
+        skills: User's listed skills
+        target_roles: User's target job roles
+        
+    Returns:
+        List of 5 questions with id, question, options, correct_index, skill_being_tested
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("⚠️ GEMINI_API_KEY not set")
+        return None
+    
+    # 1. Initialize LLM
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        google_api_key=api_key
+    )
+    
+    # 2. Setup Parser
+    parser = JsonOutputParser()
+    
+    # 3. Build context from skills and roles
+    skills_str = ", ".join(skills[:8]) if skills else "general programming"
+    roles_str = ", ".join(target_roles[:3]) if target_roles else "software engineering"
+    
+    # 4. Define Prompt
+    prompt = PromptTemplate(
+        template="""
+        You are creating an onboarding assessment for a career platform.
+        
+        Generate exactly 5 multiple-choice questions to assess a candidate with these details:
+        - Skills: {skills}
+        - Target Roles: {target_roles}
+        
+        Requirements:
+        1. Questions should test practical knowledge relevant to their skills and target roles
+        2. Mix difficulty: 2 easy, 2 medium, 1 challenging
+        3. Each question should have exactly 4 options with only ONE correct answer
+        4. Questions should feel professional and relevant to job interviews
+        5. Cover different skills if possible
+        
+        {format_instructions}
+        
+        Return a JSON object with this structure:
+        {{
+            "questions": [
+                {{
+                    "id": "q1",
+                    "question": "Question text here",
+                    "options": ["Option A", "Option B", "Option C", "Option D"],
+                    "correct_index": 0,
+                    "skill_being_tested": "Python"
+                }},
+                ... (4 more questions)
+            ]
+        }}
+        
+        Important: Return exactly 5 questions.
+        """,
+        input_variables=["skills", "target_roles"],
+        partial_variables={"format_instructions": parser.get_format_instructions()},
+    )
+    
+    # 5. Create Chain
+    chain = prompt | llm | parser
+    
+    try:
+        print(f"[Onboarding Quiz] Generating 5 questions for skills: {skills_str}")
+        result = chain.invoke({
+            "skills": skills_str,
+            "target_roles": roles_str
+        })
+        
+        questions = result.get("questions", [])
+        
+        # Validate we have 5 questions
+        if len(questions) < 5:
+            print(f"[Onboarding Quiz] Warning: Only got {len(questions)} questions")
+            return None
+        
+        # Validate each question structure
+        validated_questions = []
+        for i, q in enumerate(questions[:5]):
+            if not all(k in q for k in ["question", "options", "correct_index"]):
+                print(f"[Onboarding Quiz] Question {i} missing required fields")
+                continue
+            
+            if len(q.get("options", [])) != 4:
+                print(f"[Onboarding Quiz] Question {i} doesn't have 4 options")
+                continue
+                
+            validated_questions.append({
+                "id": q.get("id", f"q{i+1}"),
+                "question": q["question"],
+                "options": q["options"],
+                "correct_index": q["correct_index"],
+                "skill_being_tested": q.get("skill_being_tested", skills[i % len(skills)] if skills else "General")
+            })
+        
+        if len(validated_questions) < 5:
+            print(f"[Onboarding Quiz] Only {len(validated_questions)} valid questions after validation")
+            return None
+            
+        return validated_questions
+        
+    except Exception as e:
+        print(f"[Onboarding Quiz] Generation Error: {e}")
         return None
