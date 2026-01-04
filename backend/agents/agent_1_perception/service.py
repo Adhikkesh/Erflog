@@ -15,7 +15,8 @@ from .tools import (
     extract_structured_data, 
     generate_embedding, 
     upload_resume_to_storage,
-    generate_skill_quiz
+    generate_skill_quiz,
+    generate_onboarding_questions
 )
 from .github_watchdog import (
     fetch_user_recent_activity,
@@ -164,6 +165,7 @@ class PerceptionService:
         Scans user's GitHub activity stream for skill analysis.
         
         REFACTORED: Now updates skills_metadata instead of just appending to skills array.
+        - Uses SHA-based caching to avoid redundant LLM calls
         - New skills: source="github", verification_status="pending"
         - Existing skills: Updates evidence and last_seen
         - Syncs skills_metadata keys to legacy skills array
@@ -192,9 +194,46 @@ class PerceptionService:
         if not username:
             raise HTTPException(status_code=400, detail=f"Invalid GitHub URL format: {github_url}")
         
-        print(f"[Watchdog] Scanning GitHub activity for user: {username}")
+        # 3. Get current SHA from GitHub (quick check)
+        current_sha = get_latest_commit_sha(username)
         
-        # 3. Fetch recent activity from Events API
+        # 4. CHECK CACHE: If SHA matches cached SHA, return cached insights instantly
+        cache_response = self.supabase.table("github_activity_cache").select(
+            "last_analyzed_sha, detected_skills, repos_touched, tech_stack, insight_message, analyzed_at"
+        ).eq("user_id", user_id).execute()
+        
+        if cache_response.data and len(cache_response.data) > 0:
+            cache = cache_response.data[0]
+            cached_sha = cache.get("last_analyzed_sha")
+            
+            if cached_sha and current_sha and cached_sha == current_sha:
+                print(f"[Watchdog] ✓ Cache HIT - SHA unchanged ({cached_sha[:7]}), returning cached insights")
+                
+                # Return cached data
+                cached_skills = cache.get("detected_skills") or []
+                # Extract skill names from cached skills for display
+                cached_skill_names = [s.get("skill") for s in cached_skills if s.get("skill")]
+                
+                return {
+                    "updated_skills": current_skills,
+                    "skills_metadata": current_metadata,
+                    "analysis": {"detected_skills": cached_skills},
+                    "repos_touched": cache.get("repos_touched") or [],
+                    "latest_sha": cached_sha,
+                    "new_skills": cached_skill_names,  # Return cached skills so they display
+                    "existing_skills_updated": [],
+                    "insights": {
+                        "repos_active": cache.get("repos_touched") or [],
+                        "main_focus": cache.get("tech_stack", [])[0] if cache.get("tech_stack") else None,
+                        "tech_stack": cache.get("tech_stack") or [],
+                        "message": cache.get("insight_message") or "Your GitHub profile is already synced!"
+                    },
+                    "from_cache": True
+                }
+        
+        print(f"[Watchdog] Cache MISS - Running fresh analysis for user: {username}")
+        
+        # 5. Fetch recent activity from Events API
         activity = fetch_user_recent_activity(username)
         
         if not activity or not activity.get("recent_code_context"):
@@ -203,7 +242,9 @@ class PerceptionService:
                 "updated_skills": current_skills,
                 "skills_metadata": current_metadata,
                 "analysis": None,
-                "message": "No recent code activity found on GitHub"
+                "message": "No recent code activity found on GitHub",
+                "new_skills": [],
+                "insights": None
             }
         
         # 4. Analyze the code context
@@ -214,12 +255,18 @@ class PerceptionService:
                 "updated_skills": current_skills,
                 "skills_metadata": current_metadata,
                 "analysis": None,
-                "message": "Could not analyze code context"
+                "message": "Could not analyze code context",
+                "new_skills": [],
+                "insights": None
             }
         
         # 5. Update skills_metadata with detected skills
         now = datetime.utcnow().isoformat()
         detected_skills = analysis.get('detected_skills', [])
+        
+        # Track NEW skills (not in current profile)
+        new_skills_added = []
+        existing_skills_updated = []
         
         for item in detected_skills:
             skill_name = item.get('skill')
@@ -228,11 +275,11 @@ class PerceptionService:
             
             if skill_name in current_metadata:
                 # Skill exists - update evidence and last_seen
-                # Don't downgrade verification_status if already verified
                 current_metadata[skill_name]["evidence"] = evidence
                 current_metadata[skill_name]["last_seen"] = now
                 if current_metadata[skill_name].get("level") is None:
                     current_metadata[skill_name]["level"] = level
+                existing_skills_updated.append(skill_name)
             else:
                 # New skill from GitHub
                 current_metadata[skill_name] = {
@@ -242,6 +289,7 @@ class PerceptionService:
                     "evidence": evidence,
                     "last_seen": now
                 }
+                new_skills_added.append(skill_name)
         
         # 6. Sync skills array from skills_metadata keys (for backward compatibility)
         final_skills = list(current_metadata.keys())
@@ -263,13 +311,79 @@ class PerceptionService:
         except Exception as e:
             print(f"[Watchdog] Pinecone update warning: {e}")
         
+        # 9. Generate friendly insights
+        repos = activity.get("repos_touched", [])
+        top_skills = [s.get('skill') for s in detected_skills[:3]]
+        
+        insight_message = self._generate_insight_message(repos, top_skills, new_skills_added)
+        
+        insights = {
+            "repos_active": repos,
+            "main_focus": top_skills[0] if top_skills else None,
+            "tech_stack": top_skills,
+            "message": insight_message
+        }
+        
+        # 10. CACHE WRITE: Store insights for future cache hits
+        latest_sha = activity.get("latest_commit_sha")
+        if latest_sha:
+            try:
+                # Upsert to cache table
+                cache_data = {
+                    "user_id": user_id,
+                    "last_analyzed_sha": latest_sha,
+                    "detected_skills": detected_skills,
+                    "repos_touched": repos,
+                    "tech_stack": top_skills,
+                    "insight_message": insight_message,
+                    "analyzed_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+                
+                # Check if cache entry exists
+                existing = self.supabase.table("github_activity_cache").select("id").eq("user_id", user_id).execute()
+                
+                if existing.data and len(existing.data) > 0:
+                    # Update existing cache
+                    self.supabase.table("github_activity_cache").update(cache_data).eq("user_id", user_id).execute()
+                    print(f"[Watchdog] ✓ Cache UPDATED for SHA {latest_sha[:7]}")
+                else:
+                    # Insert new cache entry
+                    self.supabase.table("github_activity_cache").insert(cache_data).execute()
+                    print(f"[Watchdog] ✓ Cache CREATED for SHA {latest_sha[:7]}")
+                    
+            except Exception as e:
+                print(f"[Watchdog] ⚠️ Cache write warning: {e}")
+        
         return {
             "updated_skills": final_skills,
             "skills_metadata": current_metadata,
             "analysis": analysis,
-            "repos_touched": activity.get("repos_touched", []),
-            "latest_sha": activity.get("latest_commit_sha")
+            "repos_touched": repos,
+            "latest_sha": latest_sha,
+            "new_skills": new_skills_added,
+            "existing_skills_updated": existing_skills_updated,
+            "insights": insights,
+            "from_cache": False
         }
+    
+    def _generate_insight_message(self, repos: List[str], top_skills: List[str], new_skills: List[str]) -> str:
+        """Generate a friendly insight message about the user's recent activity."""
+        messages = []
+        
+        if repos:
+            repo_names = [r.split('/')[-1] for r in repos[:2]]  # Get short repo names
+            messages.append(f"🚀 You've been active on {', '.join(repo_names)}")
+        
+        if top_skills:
+            messages.append(f"💻 Working with {', '.join(top_skills[:3])}")
+        
+        if new_skills:
+            messages.append(f"✨ New skills detected: {', '.join(new_skills[:3])}")
+        elif top_skills:
+            messages.append("👍 Keep up the great work!")
+        
+        return " • ".join(messages) if messages else "Activity synced successfully!"
 
     # =========================================================================
     # GITHUB ACTIVITY CHECK (Polling)
@@ -308,9 +422,10 @@ class PerceptionService:
             "status": "updated",
             "new_sha": current_sha,
             "updated_skills": result.get("updated_skills", []) if result else [],
-            "skills_metadata": result.get("skills_metadata", {}) if result else {},
-            "analysis": result.get("analysis") if result else None,
-            "repos_touched": result.get("repos_touched", []) if result else []
+            "new_skills": result.get("new_skills", []) if result else [],
+            "insights": result.get("insights") if result else None,
+            "repos_touched": result.get("repos_touched", []) if result else [],
+            "from_cache": result.get("from_cache", False) if result else False
         }
 
     # =========================================================================
@@ -448,6 +563,356 @@ class PerceptionService:
             "new_status": new_status,
             "message": message,
             "skills_metadata": skills_metadata.get(skill_name, {})
+        }
+
+    # =========================================================================
+    # ONBOARDING: Status Check
+    # =========================================================================
+    
+    async def check_onboarding_status(self, user_id: str) -> Dict[str, Any]:
+        """
+        Check if user needs to complete onboarding.
+        Returns onboarding status and completion details.
+        """
+        try:
+            # Try to get profile with all columns (some may not exist yet)
+            response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
+        except Exception as e:
+            print(f"Error fetching profile: {e}")
+            # If table query fails, assume new user
+            return {
+                "needs_onboarding": True,
+                "onboarding_step": 1,
+                "profile_complete": False,
+                "has_resume": False,
+                "has_quiz_completed": False
+            }
+        
+        if not response.data:
+            # No profile exists - user needs full onboarding
+            return {
+                "needs_onboarding": True,
+                "onboarding_step": 1,
+                "profile_complete": False,
+                "has_resume": False,
+                "has_quiz_completed": False
+            }
+        
+        profile = response.data[0]
+        
+        # Check completion flags (handle missing columns gracefully)
+        onboarding_done = profile.get("onboarding_completed", False) or False
+        quiz_done = profile.get("quiz_completed", False) or False
+        has_resume = bool(profile.get("resume_url"))
+        has_skills = bool(profile.get("skills") and len(profile.get("skills", [])) > 0)
+        has_target_roles = bool(profile.get("target_roles") and len(profile.get("target_roles", [])) > 0)
+        has_education = bool(profile.get("education") and len(profile.get("education", [])) > 0)
+        
+        # Determine if onboarding is needed
+        if onboarding_done and quiz_done:
+            return {
+                "needs_onboarding": False,
+                "onboarding_step": None,
+                "profile_complete": True,
+                "has_resume": has_resume,
+                "has_quiz_completed": True
+            }
+        
+        # Determine which step they're on
+        if not has_skills or not has_target_roles or not has_education:
+            step = 2  # Need to fill profile details
+        elif not quiz_done:
+            step = 4  # Need to complete quiz
+        else:
+            step = 3  # Need social links (optional but recommended)
+        
+        return {
+            "needs_onboarding": True,
+            "onboarding_step": step,
+            "profile_complete": has_skills and has_target_roles and has_education,
+            "has_resume": has_resume,
+            "has_quiz_completed": quiz_done
+        }
+
+    # =========================================================================
+    # ONBOARDING: Complete Profile Setup
+    # =========================================================================
+    
+    async def complete_onboarding(
+        self,
+        user_id: str,
+        name: str,
+        email: Optional[str],
+        skills: List[str],
+        target_roles: List[str],
+        education: List[Dict[str, Any]],
+        experience_summary: Optional[str] = None,
+        github_url: Optional[str] = None,
+        linkedin_url: Optional[str] = None,
+        has_resume: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Complete onboarding with all user profile data.
+        Can be called whether or not user uploaded a resume.
+        """
+        now = datetime.utcnow().isoformat()
+        
+        # Build skills_metadata for manual/edited skills
+        skills_metadata = {}
+        for skill in skills:
+            skills_metadata[skill] = {
+                "source": "resume" if has_resume else "manual",
+                "verification_status": "pending",
+                "level": None,
+                "evidence": "Listed during onboarding",
+                "last_seen": now
+            }
+        
+        # Validate GitHub URL if provided
+        if github_url:
+            username = extract_username_from_url(github_url)
+            if not username:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid GitHub URL format. Expected: https://github.com/username"
+                )
+        
+        # Prepare profile data
+        profile_data = {
+            "user_id": user_id,
+            "name": name,
+            "email": email,
+            "skills": skills,
+            "skills_metadata": skills_metadata,
+            "target_roles": target_roles,
+            "education": education,
+            "experience_summary": experience_summary or "",
+            "github_url": github_url,
+            "linkedin_url": linkedin_url,
+            "onboarding_completed": False,  # Will be True after quiz
+            "updated_at": now
+        }
+        
+        # Upsert to database
+        self.supabase.table("profiles").upsert(profile_data).execute()
+        
+        # Generate embedding for vector search
+        if experience_summary or skills:
+            summary_text = experience_summary or f"Skills: {', '.join(skills)}. Target roles: {', '.join(target_roles)}"
+            embedding = generate_embedding(summary_text)
+            
+            # Upsert to Pinecone
+            vector_data = {
+                "id": user_id,
+                "values": embedding,
+                "metadata": {
+                    "email": email or "",
+                    "skills": skills,
+                    "target_roles": target_roles,
+                    "type": "user_profile"
+                }
+            }
+            self.index.upsert(vectors=[vector_data], namespace="users")
+        
+        return {
+            "status": "success",
+            "message": "Profile saved. Please complete the quiz to finish onboarding.",
+            "next_step": "quiz",
+            "profile": profile_data
+        }
+
+    # =========================================================================
+    # ONBOARDING: Generate Quiz Questions
+    # =========================================================================
+    
+    async def generate_onboarding_quiz(
+        self,
+        user_id: str,
+        skills: List[str],
+        target_roles: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Generate 5 MCQ questions based on user's skills and target roles.
+        Uses Gemini to create relevant technical questions.
+        """
+        # Get profile for context
+        response = self.supabase.table("profiles").select(
+            "skills, target_roles, education"
+        ).eq("user_id", user_id).execute()
+        
+        if response.data:
+            profile = response.data[0]
+            skills = skills or profile.get("skills", [])
+            target_roles = target_roles or profile.get("target_roles", [])
+        
+        if not skills and not target_roles:
+            raise HTTPException(
+                status_code=400,
+                detail="No skills or target roles found. Please complete profile setup first."
+            )
+        
+        # Generate questions using Gemini
+        questions = generate_onboarding_questions(skills, target_roles)
+        
+        if not questions or len(questions) < 5:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate quiz questions. Please try again."
+            )
+        
+        return {
+            "status": "success",
+            "questions": questions
+        }
+
+    # =========================================================================
+    # ONBOARDING: Submit Quiz and Complete
+    # =========================================================================
+    
+    async def submit_onboarding_quiz(
+        self,
+        user_id: str,
+        answers: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Submit quiz answers and mark onboarding as complete.
+        
+        Args:
+            user_id: User's ID
+            answers: List of {question_id, selected_index, correct_index}
+        """
+        # Calculate score
+        correct_count = sum(
+            1 for a in answers 
+            if a.get("selected_index") == a.get("correct_index")
+        )
+        total = len(answers)
+        score = int((correct_count / total) * 100) if total > 0 else 0
+        
+        # Update profile - mark onboarding complete
+        now = datetime.utcnow().isoformat()
+        
+        update_data = {
+            "onboarding_completed": True,
+            "quiz_completed": True,
+            "quiz_score": score,  # Now an integer
+            "quiz_completed_at": now,
+            "updated_at": now
+        }
+        
+        self.supabase.table("profiles").update(update_data).eq("user_id", user_id).execute()
+        
+        return {
+            "status": "success",
+            "score": score,
+            "correct": correct_count,
+            "total": total,
+            "message": f"Great job! You scored {correct_count}/{total}. Welcome to Erflog!",
+            "onboarding_complete": True
+        }
+
+    # =========================================================================
+    # DASHBOARD: Get Insights
+    # =========================================================================
+    
+    async def get_dashboard_insights(self, user_id: str) -> Dict[str, Any]:
+        """
+        Generate dashboard data for authenticated users.
+        Includes top jobs, hot skills, GitHub insights, and news.
+        """
+        # Get user profile
+        response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        
+        profile = response.data[0]
+        user_name = profile.get("name", "User")
+        skills = profile.get("skills", [])
+        target_roles = profile.get("target_roles", [])
+        github_url = profile.get("github_url")
+        
+        # Calculate profile strength
+        strength = 0
+        if profile.get("name"): strength += 15
+        if profile.get("resume_url"): strength += 25
+        if skills and len(skills) >= 3: strength += 20
+        if target_roles: strength += 15
+        if github_url: strength += 15
+        if profile.get("quiz_completed"): strength += 10
+        
+        # Get top 3 jobs from database (seeded jobs)
+        jobs_response = self.supabase.table("jobs").select(
+            "id, title, company, description"
+        ).limit(10).execute()
+        
+        top_jobs = []
+        if jobs_response.data:
+            for job in jobs_response.data[:3]:
+                # Simple match score based on skill overlap
+                job_desc = (job.get("description") or "").lower()
+                matched_skills = [s for s in skills if s.lower() in job_desc]
+                score = min(95, 60 + len(matched_skills) * 10)
+                
+                top_jobs.append({
+                    "id": job.get("id"),
+                    "title": job.get("title"),
+                    "company": job.get("company"),
+                    "match_score": score,
+                    "key_skills": matched_skills[:3] if matched_skills else skills[:3]
+                })
+        
+        # Generate hot skills to learn
+        hot_skills = []
+        trending = ["AI/ML", "Rust", "Go", "Kubernetes", "GraphQL"]
+        for i, skill in enumerate(trending[:3]):
+            if skill not in skills:
+                hot_skills.append({
+                    "skill": skill,
+                    "demand_trend": "rising",
+                    "reason": f"High demand in {target_roles[0] if target_roles else 'tech'} roles"
+                })
+        
+        # GitHub insights (if connected)
+        github_insights = None
+        if github_url:
+            username = extract_username_from_url(github_url)
+            if username:
+                try:
+                    activity = fetch_user_recent_activity(username)
+                    if activity:
+                        repos = activity.get("repos_touched", [])
+                        github_insights = {
+                            "repo_name": repos[0] if repos else "your repositories",
+                            "recent_commits": activity.get("commit_count", 0),
+                            "detected_skills": activity.get("detected_skills", [])[:3],
+                            "insight_text": f"Your recent activity shows strong focus on {skills[0] if skills else 'development'}"
+                        }
+                except Exception as e:
+                    print(f"[Dashboard] GitHub insights error: {e}")
+        
+        # News cards (static for now, can be enhanced with news API)
+        news_cards = [
+            {
+                "title": "AI Skills in High Demand",
+                "summary": "Companies are actively seeking engineers with AI/ML experience",
+                "relevance": "Based on your target roles"
+            },
+            {
+                "title": "Remote Work Trends 2026",
+                "summary": "75% of tech companies now offer remote-first positions",
+                "relevance": "Job market insight"
+            }
+        ]
+        
+        return {
+            "user_name": user_name,
+            "profile_strength": strength,
+            "top_jobs": top_jobs,
+            "hot_skills": hot_skills,
+            "github_insights": github_insights,
+            "news_cards": news_cards,
+            "agent_status": "active"
         }
 
 

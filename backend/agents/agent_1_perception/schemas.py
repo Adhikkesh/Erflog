@@ -29,6 +29,149 @@ class ProfileResponse(BaseModel):
 
 
 # =============================================================================
+# Education Model
+# =============================================================================
+
+class EducationItem(BaseModel):
+    """Education entry"""
+    institution: str
+    degree: str
+    course: Optional[str] = None
+    year: Optional[str] = None
+
+
+# =============================================================================
+# Full Onboarding Models (New Flow)
+# =============================================================================
+
+class OnboardingStep1Request(BaseModel):
+    """Step 1: Resume upload (processed separately) or skip to manual"""
+    skip_resume: bool = False
+
+
+class OnboardingStep2Request(BaseModel):
+    """Step 2: Edit extracted data or enter manually"""
+    name: str
+    email: Optional[str] = None
+    skills: List[str]
+    target_roles: List[str]
+    education: List[EducationItem]
+    experience_summary: Optional[str] = None
+
+
+class OnboardingStep3Request(BaseModel):
+    """Step 3: Social links"""
+    github_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+
+
+class OnboardingQuizAnswer(BaseModel):
+    """Single quiz answer"""
+    question_id: str
+    selected_index: int
+    correct_index: int
+
+
+class OnboardingQuizSubmission(BaseModel):
+    """Submit all 5 quiz answers"""
+    answers: List[OnboardingQuizAnswer]
+
+
+class OnboardingCompleteRequest(BaseModel):
+    """
+    Complete onboarding - combines all steps data
+    For cases where frontend sends all data at once
+    """
+    # Personal Info
+    name: str
+    email: Optional[str] = None
+    
+    # Skills & Targets
+    skills: List[str]
+    target_roles: List[str]
+    
+    # Education
+    education: List[EducationItem]
+    experience_summary: Optional[str] = None
+    
+    # Social Links (optional)
+    github_url: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    
+    # Whether resume was uploaded
+    has_resume: bool = False
+
+
+class OnboardingStatusResponse(BaseModel):
+    """Check if user needs onboarding"""
+    needs_onboarding: bool
+    onboarding_step: Optional[int] = None  # Which step they're on if incomplete
+    profile_complete: bool = False
+    has_resume: bool = False
+    has_quiz_completed: bool = False
+
+
+class QuizQuestion(BaseModel):
+    """Single quiz question for onboarding"""
+    id: str
+    question: str
+    options: List[str]
+    correct_index: int  # For stateless verification
+    skill_being_tested: str
+
+
+class OnboardingQuizResponse(BaseModel):
+    """5 MCQ questions for onboarding"""
+    questions: List[QuizQuestion]
+
+
+# =============================================================================
+# Dashboard Insights Models
+# =============================================================================
+
+class JobInsight(BaseModel):
+    """Top job for today"""
+    id: str
+    title: str
+    company: str
+    match_score: float
+    key_skills: List[str]
+
+
+class SkillInsight(BaseModel):
+    """Hot skill to learn"""
+    skill: str
+    demand_trend: str  # "rising", "stable", "declining"
+    reason: str
+
+
+class GitHubInsight(BaseModel):
+    """GitHub activity insight"""
+    repo_name: str
+    recent_commits: int
+    detected_skills: List[str]
+    insight_text: str
+
+
+class NewsCard(BaseModel):
+    """Industry news/insight"""
+    title: str
+    summary: str
+    relevance: str
+
+
+class DashboardInsightsResponse(BaseModel):
+    """Dashboard data for authenticated users"""
+    user_name: str
+    profile_strength: int  # 0-100
+    top_jobs: List[JobInsight]
+    hot_skills: List[SkillInsight]
+    github_insights: Optional[GitHubInsight] = None
+    news_cards: List[NewsCard]
+    agent_status: str  # "active", "syncing", "idle"
+
+
+# =============================================================================
 # Quiz Models (Skill Verification)
 # =============================================================================
 
@@ -44,8 +187,6 @@ class QuizResponse(BaseModel):
     skill_name: str
     question: str
     options: List[str]  # 4 options (A, B, C, D)
-    # Note: correct_index is NOT sent to frontend for security
-    # In stateless mode, we include it encrypted or trust client
 
 
 class QuizSubmission(BaseModel):
@@ -53,7 +194,6 @@ class QuizSubmission(BaseModel):
     quiz_id: str
     skill_name: str
     answer_index: int  # 0-3 corresponding to options
-    # For stateless verification, client sends expected answer
     expected_correct_index: Optional[int] = None
 
 
