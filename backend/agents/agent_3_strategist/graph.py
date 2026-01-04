@@ -54,7 +54,7 @@ def search_jobs(user_query_text: str, top_k: int = 10) -> List[Dict[str, Any]]:
         for match in search_results['matches']:
             md = match.get('metadata', {})
             job_obj = {
-                "id": str(md.get("job_id", match['id'])),
+                "id": match['id'],  # Use the actual Pinecone ID (e.g., "hackathon_13")
                 "score": match['score'],
                 "title": md.get("title", "Unknown Role"),
                 "company": md.get("company", md.get("company_name", "Unknown Company")),
@@ -117,17 +117,42 @@ def get_interview_gap_analysis(job_id: str, user_id: str) -> Dict[str, Any]:
     _init_clients()
     
     try:
-        job_fetch = index.fetch(ids=[str(job_id)], namespace="")
+        # Clean job_id (remove .0 suffix if present)
+        job_id_clean = str(int(float(job_id)))
+        print(f"[Agent3] Fetching job_id={job_id_clean} from Pinecone (namespace='')")
+        
+        job_fetch = index.fetch(ids=[job_id_clean], namespace="")
         job_vector = None
         job_metadata = {}
         
         if job_fetch and job_fetch.get('vectors'):
-            job_data = job_fetch['vectors'].get(str(job_id))
+            job_data = job_fetch['vectors'].get(job_id_clean)
             if job_data:
                 job_vector = job_data.get('values')
                 job_metadata = job_data.get('metadata', {})
+                print(f"[Agent3] ✅ Found job: {job_metadata.get('title', 'Unknown')}")
+            else:
+                print(f"[Agent3] ❌ Job {job_id_clean} not in fetch result. Available IDs: {list(job_fetch['vectors'].keys())}")
+        else:
+            print(f"[Agent3] ❌ Empty fetch result for job {job_id_clean}")
         
         if not job_vector:
+            print(f"[Agent3] ⚠️ Job {job_id_clean} not found in Pinecone, returning Unknown")
+            
+            # List some available jobs to help debug (use 768 dimensions for this index)
+            try:
+                sample_query = index.query(
+                    vector=[0.1] * 768,  # Match index dimension (768 not 1536)
+                    top_k=5,
+                    namespace="",
+                    include_metadata=True
+                )
+                if sample_query and sample_query.get('matches'):
+                    available_jobs = [f"{m['id']}:{m.get('metadata', {}).get('title', 'No Title')}" for m in sample_query['matches'][:5]]
+                    print(f"[Agent3] 💡 Sample available jobs: {available_jobs}")
+            except Exception as e:
+                print(f"[Agent3] Could not fetch sample jobs: {e}")
+            
             return {
                 "job": {"title": "Unknown", "company": "Unknown", "description": "", "summary": ""},
                 "user": {"name": "Unknown", "skills": [], "summary": ""},
@@ -135,6 +160,7 @@ def get_interview_gap_analysis(job_id: str, user_id: str) -> Dict[str, Any]:
                 "gap_analysis": {}
             }
         
+        print(f"[Agent3] Fetching user_id={user_id} from Pinecone (namespace='users')")
         user_fetch = index.fetch(ids=[str(user_id)], namespace="users")
         user_vector = None
         user_metadata = {}
@@ -144,8 +170,14 @@ def get_interview_gap_analysis(job_id: str, user_id: str) -> Dict[str, Any]:
             if user_data:
                 user_vector = user_data.get('values')
                 user_metadata = user_data.get('metadata', {})
+                print(f"[Agent3] ✅ Found user: {user_metadata.get('name', 'Unknown')}")
+            else:
+                print(f"[Agent3] ❌ User not in fetch result")
+        else:
+            print(f"[Agent3] ❌ Empty fetch result for user")
         
         if not user_vector:
+            print(f"[Agent3] ⚠️ User {user_id} not found in Pinecone")
             return {
                 "job": job_metadata,
                 "user": {"name": "Unknown"},
@@ -197,7 +229,18 @@ def get_interview_gap_analysis(job_id: str, user_id: str) -> Dict[str, Any]:
             contents=gap_prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
-        gap_analysis = json.loads(gap_response.text.replace("```json", "").replace("```", "").strip())
+        gap_text = gap_response.text.replace("```json", "").replace("```", "").strip()
+        gap_analysis = json.loads(gap_text)
+        
+        # Ensure gap_analysis is a dict, not a list
+        if not isinstance(gap_analysis, dict):
+            print(f"[Agent3] ⚠️ gap_analysis is not a dict: {type(gap_analysis)}, using empty dict")
+            gap_analysis = {
+                "missing_skills": [],
+                "weak_areas": [],
+                "suggested_questions": [],
+                "match_tier": "B"
+            }
         
         return {
             "job": {
@@ -217,7 +260,9 @@ def get_interview_gap_analysis(job_id: str, user_id: str) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Agent 3 Error: {e}")
-        return {}
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 def process_career_strategy(user_skills: str, jobs: List[Dict[str, Any]]) -> Dict[str, Any]:
     _init_clients()

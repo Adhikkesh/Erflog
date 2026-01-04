@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import {
   Mic,
@@ -17,8 +18,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-// Hardcoded for testing
-const JOB_ID = "1";
+// User ID (hardcoded for now, could be from session)
 const USER_ID = "9f3eef8e-635b-46cc-a088-affae97c9a2b";
 const WS_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace("http", "ws") ||
@@ -46,6 +46,9 @@ interface InterviewHistoryItem {
 }
 
 export default function VoiceInterviewPage() {
+  const searchParams = useSearchParams();
+  const jobId = searchParams.get('jobId') || '1'; // Default to '1' if not provided
+  
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -225,8 +228,8 @@ export default function VoiceInterviewPage() {
       // Store processor reference for cleanup
       (audioContextRef.current as any).processor = processor;
 
-      // Connect WebSocket
-      const ws = new WebSocket(`${WS_URL}/ws/interview/${JOB_ID}`);
+      // Connect WebSocket with dynamic job_id
+      const ws = new WebSocket(`${WS_URL}/ws/interview/${jobId}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -368,7 +371,7 @@ export default function VoiceInterviewPage() {
                   Voice Interview
                 </h1>
                 <p className="text-sm text-secondary">
-                  Job ID: {JOB_ID} | User: {USER_ID.slice(0, 8)}...
+                  Job ID: {jobId} | User: {USER_ID.slice(0, 8)}...
                 </p>
               </div>
             </div>

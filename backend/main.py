@@ -41,7 +41,8 @@ from agents.agent_1_perception.graph import perception_node, app as perception_a
 from agents.agent_1_perception.github_watchdog import fetch_and_analyze_github  # <--- NEW IMPORT
 from agents.agent_2_market.graph import market_scan_node
 from agents.agent_3_strategist.graph import search_jobs as strategist_search_jobs, process_career_strategy
-from agents.agent_6_chat_interview.graph import interview_graph, create_initial_state, add_user_message
+from agents.agent_6_chat_interview.graph import interview_graph as chat_interview_graph, create_initial_state as create_chat_state, add_user_message as add_chat_message
+from agents.agent_6_interviewer.graph import interview_graph as voice_interview_graph, create_initial_state as create_voice_state, add_user_message as add_voice_message
 
 # Import services
 from services.audio_service import transcribe_audio_bytes, synthesize_audio_bytes
@@ -202,14 +203,70 @@ async def match_agent(request: SearchRequest):
         raise HTTPException(status_code=400, detail="Query text is required")
     
     try:
-        result = process_career_strategy(request.query)
+        print(f"[Match Agent] Searching for jobs with query: {request.query}")
+        
+        # First, search for matching jobs
+        jobs = strategist_search_jobs(request.query, top_k=10)
+        print(f"[Match Agent] Found {len(jobs)} jobs")
+        
+        if not jobs:
+            return {
+                "status": "success",
+                "count": 0,
+                "matches": [],
+                "message": "No matching jobs found"
+            }
+        
+        # Then, process career strategy with the found jobs
+        print(f"[Match Agent] Processing career strategy...")
+        strategy = process_career_strategy(request.query, jobs)
+        
         return {
             "status": "success",
-            "count": result.get("matches_found", 0),
-            "matches": result.get("strategy_report", [])
+            "count": len(jobs),
+            "matches": jobs,
+            "strategy": strategy
         }
     except Exception as e:
+        print(f"[Match Agent] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Match agent error: {str(e)}")
+
+
+@app.get("/api/jobs/list")
+async def list_available_jobs():
+    """List all available jobs in Pinecone for debugging"""
+    try:
+        from agents.agent_3_strategist.graph import _init_clients, index as pinecone_index
+        _init_clients()
+        
+        # Query to get some jobs
+        sample_query = pinecone_index.query(
+            vector=[0.1] * 1536,  # Dummy vector
+            top_k=20,
+            namespace="",
+            include_metadata=True
+        )
+        
+        jobs = []
+        if sample_query and sample_query.get('matches'):
+            for match in sample_query['matches']:
+                metadata = match.get('metadata', {})
+                jobs.append({
+                    "id": match['id'],
+                    "title": metadata.get('title', 'Unknown'),
+                    "company": metadata.get('company', 'Unknown'),
+                    "score": match.get('score', 0)
+                })
+        
+        return JSONResponse(status_code=200, content={
+            "total": len(jobs),
+            "jobs": jobs
+        })
+    except Exception as e:
+        logger.error(f"[List Jobs] Error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/api/generate-kit")
@@ -219,12 +276,16 @@ async def generate_kit_endpoint(request: KitRequest):
     Uses Agent 4 (Operative) to mutate the resume.
     """
     print(f"[Generate Kit] Request for: {request.user_name} - {request.job_title} @ {request.job_company}")
+    print(f"[Generate Kit] Request data: {request.model_dump()}")
     
     # Try to get user_id from session
     user_id = None
     user_profile = None
+    session_id = getattr(request, 'session_id', None)
     
-    if request.session_id and request.session_id in SESSIONS:
+    print(f"[Generate Kit] Session ID from request: {session_id}")
+    
+    if session_id and session_id in SESSIONS:
         state = SESSIONS[request.session_id]
         user_id = state.get("user_id")
         perception_results = state.get("results", {}).get("perception", {})
@@ -273,7 +334,7 @@ async def generate_kit_endpoint(request: KitRequest):
         )
     
     # Build job description from request
-    job_description = request.job_description or f"""
+    job_description = getattr(request, 'job_description', None) or f"""
     {request.job_title} at {request.job_company}
     
     We are looking for a talented {request.job_title} to join our team at {request.job_company}.
@@ -726,10 +787,10 @@ async def interview_text_endpoint(websocket: WebSocket, job_id: str):
 
     thread_id = f"{user_id}_{job_id}_{uuid.uuid4()}"
     config = {"configurable": {"thread_id": thread_id}}
-    state = create_initial_state(full_context)
+    state = create_chat_state(full_context)
     
     await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
-    result = interview_graph.invoke(state, config=config)
+    result = chat_interview_graph.invoke(state, config=config)
     ai_message = result["messages"][-1].content if result["messages"] else "Hello!"
     
     await websocket.send_json({"type": "event", "event": "thinking", "status": "end"})
@@ -746,8 +807,8 @@ async def interview_text_endpoint(websocket: WebSocket, job_id: str):
             logger.info(f"User: {user_text[:50]}...")
             await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
             
-            state = add_user_message(result, user_text)
-            result = interview_graph.invoke(state, config=config)
+            state = add_chat_message(result, user_text)
+            result = chat_interview_graph.invoke(state, config=config)
             
             ai_message = result["messages"][-1].content if result["messages"] else "Could you repeat?"
             current_stage = result.get("stage", "unknown")
@@ -758,9 +819,31 @@ async def interview_text_endpoint(websocket: WebSocket, job_id: str):
             await websocket.send_json({"type": "event", "event": "stage_change", "stage": current_stage})
             await websocket.send_json({"type": "message", "role": "assistant", "content": ai_message})
             
+            # Check if interview is ending
             if current_stage == "end" or result.get("ending"):
-                if result.get("feedback"):
-                    await websocket.send_json({"type": "feedback", "data": result["feedback"]})
+                logger.info("Interview ending - sending feedback...")
+                
+                # Send feedback if available
+                feedback = result.get("feedback")
+                if feedback:
+                    logger.info(f"Feedback: {feedback.get('verdict', 'N/A')} - Score: {feedback.get('score', 0)}")
+                    
+                    # Create a text message with the feedback
+                    verdict = feedback.get("verdict", "Thank you")
+                    score = feedback.get("score", 0)
+                    summary = feedback.get("summary", "We appreciate your time.")
+                    
+                    feedback_message = f"\\n\\n**Interview Results**\\n\\n{verdict}. Your interview score is {score} out of 100.\\n\\n{summary}"
+                    
+                    # Send feedback data for UI
+                    await websocket.send_json({"type": "feedback", "data": feedback})
+                    
+                    # Send text feedback message
+                    await websocket.send_json({"type": "message", "role": "assistant", "content": feedback_message})
+                    
+                    await asyncio.sleep(1)
+                
+                logger.info("Closing interview session")
                 await websocket.close()
                 break
                 
@@ -776,27 +859,52 @@ async def interview_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()
     user_id = "9f3eef8e-635b-46cc-a088-affae97c9a2b"
     
+    # Clean job_id: "73.0" -> "73" or "job_18" -> "18"
     try:
-        full_context = fetch_interview_context(user_id, job_id)
+        import re
+        numeric_part = re.search(r'\d+', job_id)
+        if numeric_part:
+            job_id_clean = numeric_part.group()
+            logger.info(f"[WebSocket] Interview started - Job: {job_id_clean}, User: {user_id}")
+        else:
+            raise ValueError(f"No numeric part found in job_id: {job_id}")
+    except (ValueError, AttributeError) as e:
+        logger.error(f"[WebSocket] Invalid job_id: {job_id}")
+        await websocket.send_json({"type": "error", "message": "Invalid job ID"})
+        await websocket.close()
+        return
+    
+    try:
+        full_context = fetch_interview_context(user_id, job_id_clean)
         full_context["user_id"] = user_id
-        full_context["job_id"] = job_id
+        full_context["job_id"] = job_id_clean
         logger.info(f"Voice: {full_context['job']['title']}")
     except Exception as e:
         logger.error(f"Context Error: {e}")
+        await websocket.send_json({"type": "error", "message": f"Failed to load interview context: {str(e)}"})
         await websocket.close()
         return
 
     thread_id = f"voice_{user_id}_{job_id}_{uuid.uuid4()}"
     config = {"configurable": {"thread_id": thread_id}}
-    state = create_initial_state(full_context)
+    state = create_voice_state(full_context)
     
     await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
-    result = interview_graph.invoke(state, config=config)
+    
+    welcome_start = time.time()
+    result = voice_interview_graph.invoke(state, config=config)
     welcome_text = result["messages"][-1].content if result["messages"] else "Hello!"
+    
+    tts_start = time.time()
+    # Strip markdown formatting before TTS
+    clean_welcome = welcome_text.replace('**', '').replace('*', '').replace('_', '').replace('~~', '')
+    welcome_audio = synthesize_audio_bytes(clean_welcome)
+    tts_time = time.time() - tts_start
+    logger.info(f"⏱️ Welcome TTS: {tts_time:.2f}s, Total: {time.time() - welcome_start:.2f}s")
     
     await websocket.send_json({"type": "event", "event": "thinking", "status": "end"})
     await websocket.send_json({"type": "event", "event": "stage_change", "stage": result.get("stage", "intro")})
-    await websocket.send_bytes(synthesize_audio_bytes(welcome_text))
+    await websocket.send_bytes(welcome_audio)
     
     audio_buffer = bytearray()
     silence_start_time = None
@@ -804,7 +912,7 @@ async def interview_endpoint(websocket: WebSocket, job_id: str):
     
     # FIX: Cooldown timer to ignore echo/buffered audio
     last_ai_response_time = time.time()
-    COOLDOWN_SECONDS = 1.0
+    COOLDOWN_SECONDS = 0.5  # Reduced from 1.0 to 0.5 for faster response
     
     try:
         while result.get("stage") != "end" and not result.get("ending"):
@@ -812,6 +920,7 @@ async def interview_endpoint(websocket: WebSocket, job_id: str):
             
             # THE FIX: Ignore buffered audio during cooldown
             if time.time() - last_ai_response_time < COOLDOWN_SECONDS:
+                logger.debug(f"[Cooldown] Ignoring audio (cooldown active)")
                 continue
             
             audio_buffer.extend(data)
@@ -820,39 +929,121 @@ async def interview_endpoint(websocket: WebSocket, job_id: str):
             if rms > SILENCE_THRESHOLD:
                 is_speaking = True
                 silence_start_time = None
+                logger.debug(f"[Audio] Speaking detected (RMS: {rms})")
             elif is_speaking:
                 if silence_start_time is None:
                     silence_start_time = asyncio.get_event_loop().time()
+                    logger.debug(f"[Audio] Silence started")
                 
                 if (asyncio.get_event_loop().time() - silence_start_time) >= SILENCE_DURATION:
+                    logger.info(f"[Audio] Silence threshold reached, processing audio...")
                     await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
                     
+                    turn_start = time.time()
+                    
+                    # Transcription
+                    transcribe_start = time.time()
                     user_text = transcribe_audio_bytes(bytes(audio_buffer))
+                    transcribe_time = time.time() - transcribe_start
+                    
                     audio_buffer = bytearray()
                     is_speaking = False
                     silence_start_time = None
                     
                     if user_text.strip():
                         logger.info(f"Voice User: {user_text[:50]}...")
+                        logger.info(f"⏱️ Transcription: {transcribe_time:.2f}s")
                         
-                        state = add_user_message(result, user_text)
-                        result = interview_graph.invoke(state, config=config)
+                        # LLM Inference (includes graph execution)
+                        llm_start = time.time()
+                        state = add_voice_message(result, user_text)
+                        result = voice_interview_graph.invoke(state, config=config)
+                        llm_time = time.time() - llm_start
                         
                         ai_text = result["messages"][-1].content if result["messages"] else "Could you repeat?"
                         current_stage = result.get("stage", "unknown")
                         
                         logger.info(f"Voice Stage: {current_stage} | Turn: {result.get('turn', 0)}")
+                        logger.info(f"⏱️ Graph+LLM: {llm_time:.2f}s")
                         
                         await websocket.send_json({"type": "event", "event": "thinking", "status": "end"})
                         await websocket.send_json({"type": "event", "event": "stage_change", "stage": current_stage})
-                        await websocket.send_bytes(synthesize_audio_bytes(ai_text))
+                        
+                        # Audio Synthesis
+                        tts_start = time.time()
+                        # Strip markdown formatting (**, *, _, etc.) before TTS
+                        clean_text = ai_text.replace('**', '').replace('*', '').replace('_', '').replace('~~', '')
+                        audio_bytes = synthesize_audio_bytes(clean_text)
+                        tts_time = time.time() - tts_start
+                        logger.info(f"⏱️ Audio TTS: {tts_time:.2f}s")
+                        
+                        await websocket.send_bytes(audio_bytes)
+                        
+                        total_time = time.time() - turn_start
+                        logger.info(f"⏱️ TOTAL TURN: {total_time:.2f}s")
                         
                         # FIX: Update timestamp to ignore echo
                         last_ai_response_time = time.time()
                         
+                        # Check if interview is ending
                         if current_stage == "end" or result.get("ending"):
-                            if result.get("feedback"):
-                                await websocket.send_json({"type": "feedback", "data": result["feedback"]})
+                            logger.info(f"[ENDING] Interview ending detected - stage={current_stage}, ending={result.get('ending')}")
+                            
+                            # Send a brief goodbye message first
+                            goodbye_msg = "Thank you for your time today. We'll review your responses and be in touch soon."
+                            await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
+                            await asyncio.sleep(0.5)
+                            await websocket.send_json({"type": "event", "event": "thinking", "status": "end"})
+                            await websocket.send_bytes(synthesize_audio_bytes(goodbye_msg))
+                            
+                            # Wait for goodbye to be heard
+                            await asyncio.sleep(2)
+                            
+                            # Continue graph to run evaluate node
+                            logger.info("[ENDING] Invoking graph to trigger evaluate node...")
+                            try:
+                                final_result = await asyncio.to_thread(
+                                    voice_interview_graph.invoke,
+                                    None,
+                                    {"configurable": {"thread_id": thread_id}}
+                                )
+                                logger.info(f"[ENDING] Evaluate complete - stage={final_result.get('stage')}")
+                                
+                                # Send feedback if available
+                                feedback = final_result.get("feedback")
+                                if feedback:
+                                    logger.info(f"[ENDING] ✅ Feedback generated: {feedback.get('verdict', 'N/A')} - Score: {feedback.get('score', 0)}")
+                                else:
+                                    logger.error("[ENDING] ❌ No feedback in final_result!")
+                            except Exception as eval_error:
+                                logger.error(f"[ENDING] Evaluation error: {eval_error}")
+                                import traceback
+                                traceback.print_exc()
+                                feedback = None
+                            if feedback:
+                                logger.info(f"Feedback: {feedback.get('verdict', 'N/A')} - Score: {feedback.get('score', 0)}")
+                                
+                                # Create a voice message with the feedback
+                                verdict = feedback.get("verdict", "Thank you")
+                                score = feedback.get("score", 0)
+                                
+                                # SHORT feedback message
+                                feedback_message = f"{verdict}. Score: {score}. We'll be in touch soon."
+                                
+                                # Send feedback data for UI
+                                await websocket.send_json({"type": "feedback", "data": feedback})
+                                
+                                # Send audio feedback (with markdown stripped)
+                                await websocket.send_json({"type": "event", "event": "thinking", "status": "start"})
+                                await asyncio.sleep(0.5)
+                                await websocket.send_json({"type": "event", "event": "thinking", "status": "end"})
+                                clean_feedback = feedback_message.replace('**', '').replace('*', '').replace('_', '')
+                                await websocket.send_bytes(synthesize_audio_bytes(clean_feedback))
+                                
+                                # Wait for feedback to be heard
+                                await asyncio.sleep(3)
+                            
+                            logger.info("Closing interview session")
                             await websocket.close()
                             break
                     else:

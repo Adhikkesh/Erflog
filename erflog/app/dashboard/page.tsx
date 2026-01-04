@@ -173,21 +173,26 @@ function JobCard({ job, index }: { job: JobMatch; index: number }) {
           {job.salary && <span>{job.salary}</span>}
         </div>
 
-        <div className="flex gap-2">
-          {isReady ? (
-            <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
-              <Zap className="w-4 h-4" /> Deploy Kit
-            </button>
-          ) : (
-            <>
-              <button onClick={() => router.push(`/jobs/${job.id}`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border font-medium transition-all hover:bg-gray-50" style={{ borderColor: "#E5E0D8" }}>
-                <Target className="w-4 h-4" /> View Roadmap
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            {isReady ? (
+              <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
+                <Zap className="w-4 h-4" /> Deploy Kit
               </button>
-              <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex items-center justify-center px-4 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </>
-          )}
+            ) : (
+              <>
+                <button onClick={() => router.push(`/jobs/${job.id}`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border font-medium transition-all hover:bg-gray-50" style={{ borderColor: "#E5E0D8" }}>
+                  <Target className="w-4 h-4" /> View Roadmap
+                </button>
+                <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex items-center justify-center px-4 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </>
+            )}
+          </div>
+          <button onClick={() => router.push(`/interview/voice?jobId=${job.id}`)} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border font-medium transition-all hover:bg-gray-50 text-sm" style={{ borderColor: "#D95D39", color: "#D95D39" }}>
+            🎤 Mock Interview
+          </button>
         </div>
       </div>
     </motion.div>

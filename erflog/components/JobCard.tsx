@@ -77,22 +77,37 @@ export default function JobCard({
       </div>
 
       {/* Action Buttons - Bottom */}
-      <div className="flex gap-2 p-6">
+      <div className="flex flex-col gap-2 p-6">
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="md"
+            onClick={handleAnalyzeGap}
+            className="flex-1 text-sm"
+          >
+            Analyze Gap
+          </Button>
+          <Button
+            variant="black"
+            size="md"
+            onClick={handleDeploy}
+            className="flex-1 text-sm"
+          >
+            Deploy
+          </Button>
+        </div>
         <Button
           variant="outline"
           size="md"
-          onClick={handleAnalyzeGap}
-          className="flex-1 text-sm"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            router.push(`/interview/voice?jobId=${id}`);
+          }}
+          className="w-full text-sm"
+          style={{ borderColor: '#D95D39', color: '#D95D39' }}
         >
-          Analyze Gap
-        </Button>
-        <Button
-          variant="black"
-          size="md"
-          onClick={handleDeploy}
-          className="flex-1 text-sm"
-        >
-          Deploy
+          🎤 Mock Interview
         </Button>
       </div>
     </div>
