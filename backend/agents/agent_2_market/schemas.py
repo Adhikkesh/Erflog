@@ -85,9 +85,10 @@ class JobSchema(BaseModel):
         return data
 
     def to_pinecone_metadata(self) -> dict:
-        """Convert to Pinecone metadata."""
+        """Convert to Pinecone metadata.
+        Note: supabase_id will be added by the service layer.
+        """
         return {
-            "item_id": self.link,  # Use link as unique identifier
             "type": self.type,
             "title": self.title,
             "company": self.company,
@@ -95,6 +96,7 @@ class JobSchema(BaseModel):
             "summary": self.summary[:500] if self.summary else "",
             "source": self.source,
             "platform": self.platform,
+            "location": self.location,
         }
 
 
@@ -141,9 +143,10 @@ class MarketNewsSchema(BaseModel):
         return data
 
     def to_pinecone_metadata(self) -> dict:
-        """Convert to Pinecone metadata."""
+        """Convert to Pinecone metadata.
+        Note: supabase_id will be added by the service layer.
+        """
         return {
-            "item_id": self.url,  # Use URL as unique identifier
             "type": "news",
             "title": self.title,
             "url": self.url,

@@ -497,8 +497,12 @@ class MarketIntelligenceService:
     # STEP 10: Storage Operations
     # =========================================================================
     
-    def _save_jobs_to_supabase(self, jobs: list[JobSchema]) -> list[JobSchema]:
-        """Save jobs/hackathons to Supabase jobs table."""
+    def _save_jobs_to_supabase(self, jobs: list[JobSchema]) -> list[tuple[int, JobSchema]]:
+        """Save jobs/hackathons to Supabase jobs table.
+        
+        Returns:
+            List of tuples (supabase_id, job_schema) for saved items.
+        """
         saved = []
         
         for job in jobs:
@@ -509,16 +513,24 @@ class MarketIntelligenceService:
                     on_conflict="link"
                 ).execute()
                 
-                if response.data:
-                    saved.append(job)
+                if response.data and len(response.data) > 0:
+                    # Get the Supabase-generated integer ID
+                    supabase_id = response.data[0].get("id")
+                    if supabase_id is not None:
+                        saved.append((supabase_id, job))
+                        print(f"[Market] Saved {job.type}: ID={supabase_id}, Title={job.title[:50]}")
             except Exception as e:
                 print(f"[Market] Job save error: {str(e)}")
                 continue
         
         return saved
     
-    def _save_news_to_supabase(self, news: list[MarketNewsSchema]) -> list[MarketNewsSchema]:
-        """Save news to Supabase market_news table."""
+    def _save_news_to_supabase(self, news: list[MarketNewsSchema]) -> list[tuple[int, MarketNewsSchema]]:
+        """Save news to Supabase market_news table.
+        
+        Returns:
+            List of tuples (supabase_id, news_schema) for saved items.
+        """
         saved = []
         
         for item in news:
@@ -529,8 +541,12 @@ class MarketIntelligenceService:
                     on_conflict="url"
                 ).execute()
                 
-                if response.data:
-                    saved.append(item)
+                if response.data and len(response.data) > 0:
+                    # Get the Supabase-generated integer ID
+                    supabase_id = response.data[0].get("id")
+                    if supabase_id is not None:
+                        saved.append((supabase_id, item))
+                        print(f"[Market] Saved news: ID={supabase_id}, Title={item.title[:50]}")
             except Exception as e:
                 print(f"[Market] News save error: {str(e)}")
                 continue
@@ -539,30 +555,36 @@ class MarketIntelligenceService:
     
     def _save_to_pinecone(
         self, 
-        items: list[JobSchema | MarketNewsSchema],
+        items: list[tuple[int, JobSchema | MarketNewsSchema]],
         namespace: str = ""
     ) -> int:
         """
         Save items to Pinecone with embeddings.
-        Uses __default__ namespace.
+        Uses the Supabase integer ID as the Pinecone vector ID.
+        
+        Args:
+            items: List of tuples (supabase_id, schema_object)
+            namespace: Pinecone namespace (default: "")
         """
         if not self.pinecone_index:
             return 0
         
         vectors = []
         
-        for item in items:
+        for supabase_id, item in items:
             try:
-                # Build embedding text and vector ID using link/url as unique identifier
+                # Use Supabase integer ID as string for Pinecone vector ID
+                vector_id = str(supabase_id)
+                
+                # Build embedding text
                 if isinstance(item, JobSchema):
                     text = f"{item.title} at {item.company}. {item.summary}"
                     metadata = item.to_pinecone_metadata()
-                    # Use hash of link as vector ID (Pinecone IDs have length limits)
-                    vector_id = f"{item.type}_{hashlib.md5(item.link.encode()).hexdigest()}"
+                    metadata["supabase_id"] = supabase_id  # Store ID in metadata too
                 else:
                     text = f"{item.title}. {item.summary}"
                     metadata = item.to_pinecone_metadata()
-                    vector_id = f"news_{hashlib.md5(item.url.encode()).hexdigest()}"
+                    metadata["supabase_id"] = supabase_id
                 
                 embedding = generate_embedding(text)
                 
@@ -572,8 +594,10 @@ class MarketIntelligenceService:
                     "metadata": metadata
                 })
                 
+                print(f"[Market] Prepared vector: ID={vector_id} for '{item.title[:40]}...'")
+                
             except Exception as e:
-                print(f"[Market] Embedding error: {str(e)}")
+                print(f"[Market] Embedding error for ID {supabase_id}: {str(e)}")
                 continue
         
         if vectors:
@@ -583,6 +607,7 @@ class MarketIntelligenceService:
                     vectors=vectors,
                     namespace=namespace or ""
                 )
+                print(f"[Market] Upserted {len(vectors)} vectors to Pinecone")
                 return len(vectors)
             except Exception as e:
                 print(f"[Market] Pinecone upsert error: {str(e)}")
@@ -719,19 +744,20 @@ class MarketIntelligenceService:
             if raw_jobs:
                 normalized = self._normalize_and_dedupe_jobs(raw_jobs, "job")
                 saved = self._save_jobs_to_supabase(normalized)
-                result["jobs"] = [j.to_supabase_dict() for j in saved]
+                # saved is now list of (supabase_id, job) tuples
+                result["jobs"] = [{"id": sid, **j.to_supabase_dict()} for sid, j in saved]
                 vectors_saved += self._save_to_pinecone(saved)
             
             if raw_hackathons:
                 normalized = self._normalize_and_dedupe_jobs(raw_hackathons, "hackathon")
                 saved = self._save_jobs_to_supabase(normalized)
-                result["hackathons"] = [h.to_supabase_dict() for h in saved]
+                result["hackathons"] = [{"id": sid, **h.to_supabase_dict()} for sid, h in saved]
                 vectors_saved += self._save_to_pinecone(saved)
                 
             if raw_news:
                 normalized = self._normalize_and_dedupe_news(raw_news)
                 saved = self._save_news_to_supabase(normalized)
-                result["news"] = [n.to_supabase_dict() for n in saved]
+                result["news"] = [{"id": sid, **n.to_supabase_dict()} for sid, n in saved]
 
             result["stats"] = {
                 "jobs_found": len(result["jobs"]),
