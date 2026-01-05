@@ -655,4 +655,103 @@ export const checkWatchdogStatus = async (sessionId: string, lastSha?: string) =
   return response.data;
 };
 
+// ============================================================================
+// Agent 3: Strategist API Types & Functions
+// ============================================================================
+
+export interface TodayDataItem {
+  id: string;
+  score: number;
+  title: string;
+  company: string;
+  link: string;
+  summary: string;
+  source: string;
+  platform: string;
+  location: string;
+  type: string;
+  supabase_id?: number;
+}
+
+export interface TodayDataResponse {
+  status: string;
+  data: {
+    jobs: TodayDataItem[];
+    hackathons: TodayDataItem[];
+    news: TodayDataItem[];
+    generated_at: string;
+    stats: {
+      jobs_count: number;
+      hackathons_count: number;
+      news_count: number;
+    };
+  };
+  updated_at?: string;
+  fresh: boolean;
+}
+
+export interface TodayJobsResponse {
+  status: string;
+  jobs: TodayDataItem[];
+  count: number;
+}
+
+export interface TodayHackathonsResponse {
+  status: string;
+  hackathons: TodayDataItem[];
+  count: number;
+}
+
+export interface StrategistDashboardResponse {
+  status: string;
+  jobs: TodayDataItem[];
+  hackathons: TodayDataItem[];
+  news: TodayDataItem[];
+  updated_at: string;
+}
+
+/**
+ * Get complete today_data for current user
+ */
+export async function getTodayData(): Promise<TodayDataResponse> {
+  const response = await api.get<TodayDataResponse>("/api/strategist/today");
+  return response.data;
+}
+
+/**
+ * Get all 10 matched jobs for current user (for Jobs page)
+ */
+export async function getTodayJobs(): Promise<TodayJobsResponse> {
+  const response = await api.get<TodayJobsResponse>("/api/strategist/jobs");
+  return response.data;
+}
+
+/**
+ * Get all 10 matched hackathons for current user (for Hackathons page)
+ */
+export async function getTodayHackathons(): Promise<TodayHackathonsResponse> {
+  const response = await api.get<TodayHackathonsResponse>("/api/strategist/hackathons");
+  return response.data;
+}
+
+/**
+ * Get dashboard summary data (5 jobs, 2 hackathons, 2 news)
+ */
+export async function getStrategistDashboard(): Promise<StrategistDashboardResponse> {
+  const response = await api.get<StrategistDashboardResponse>("/api/strategist/dashboard");
+  return response.data;
+}
+
+/**
+ * Manually refresh user's today_data
+ */
+export async function refreshTodayData(): Promise<{
+  status: string;
+  message: string;
+  stats: { jobs_count: number; hackathons_count: number; news_count: number };
+}> {
+  const response = await api.post("/api/strategist/refresh");
+  return response.data;
+}
+
 export default api;
