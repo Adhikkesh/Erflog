@@ -296,6 +296,19 @@ export default function OnboardingPage() {
     message: string;
   } | null>(null);
 
+  // Cold start progress state
+  const [coldStartStatus, setColdStartStatus] = useState<
+    "idle" | "processing" | "ready" | "error"
+  >("idle");
+  const [coldStartProgress, setColdStartProgress] = useState(0);
+  const progressMessages = [
+    "🔍 Scanning job listings...",
+    "🎯 Finding your best matches...",
+    "📊 Analyzing skill gaps...",
+    "🗺️ Generating personalized roadmaps...",
+    "✨ Preparing your dashboard...",
+  ];
+
   // Check onboarding status on mount
   useEffect(() => {
     const checkStatus = async () => {
@@ -489,6 +502,29 @@ export default function OnboardingPage() {
         message: result.message,
       });
       setQuizSubmitted(true);
+
+      // Trigger cold start if backend signals to do so
+      if (result.trigger_cold_start) {
+        setColdStartStatus("processing");
+        setColdStartProgress(0);
+
+        try {
+          // Trigger cold start in background
+          await api.triggerColdStart();
+
+          // Animate progress through messages
+          for (let i = 0; i < progressMessages.length; i++) {
+            setColdStartProgress(i);
+            await new Promise((resolve) => setTimeout(resolve, 6000)); // ~30 seconds total
+          }
+
+          setColdStartStatus("ready");
+        } catch (err) {
+          console.error("Cold start failed:", err);
+          setColdStartStatus("error");
+          // Still allow user to proceed even if cold start fails
+        }
+      }
     } catch (err) {
       setError("Failed to submit quiz. Please try again.");
       console.error(err);
@@ -980,12 +1016,83 @@ export default function OnboardingPage() {
                     Score: {quizResult.correct}/{quizResult.total} (
                     {quizResult.score.toFixed(0)}%)
                   </p>
+
+                  {/* Cold Start Progress */}
+                  {coldStartStatus === "processing" && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="mb-6 p-4 bg-gradient-to-r from-[#D95D39]/10 to-purple-100 rounded-xl border border-[#D95D39]/20"
+                    >
+                      <div className="flex items-center justify-center gap-3 mb-3">
+                        <Loader2 className="w-5 h-5 animate-spin text-[#D95D39]" />
+                        <span className="text-sm font-medium text-gray-700">
+                          Setting up your personalized experience...
+                        </span>
+                      </div>
+                      <motion.p
+                        key={coldStartProgress}
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -5 }}
+                        className="text-lg font-medium text-[#D95D39]"
+                      >
+                        {progressMessages[coldStartProgress]}
+                      </motion.p>
+                      {/* Progress bar */}
+                      <div className="mt-4 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <motion.div
+                          className="h-full bg-gradient-to-r from-[#D95D39] to-purple-500"
+                          initial={{ width: "0%" }}
+                          animate={{
+                            width: `${((coldStartProgress + 1) / progressMessages.length) * 100}%`,
+                          }}
+                          transition={{ duration: 0.5 }}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {coldStartStatus === "ready" && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="mb-6 p-4 bg-green-50 rounded-xl border border-green-200"
+                    >
+                      <CheckCircle2 className="w-8 h-8 mx-auto text-green-500 mb-2" />
+                      <p className="text-green-700 font-medium">
+                        Your personalized dashboard is ready!
+                      </p>
+                    </motion.div>
+                  )}
+
+                  {coldStartStatus === "error" && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mb-6 p-3 bg-yellow-50 rounded-xl border border-yellow-200 text-sm text-yellow-700"
+                    >
+                      We&apos;re still setting up your data. Your dashboard will be
+                      fully personalized shortly!
+                    </motion.div>
+                  )}
+
                   <button
                     onClick={() => router.push("/dashboard")}
-                    className="inline-flex items-center gap-2 px-8 py-4 bg-[#D95D39] text-white rounded-xl hover:bg-[#c54d2d] transition-colors text-lg font-medium"
+                    disabled={coldStartStatus === "processing"}
+                    className="inline-flex items-center gap-2 px-8 py-4 bg-[#D95D39] text-white rounded-xl hover:bg-[#c54d2d] transition-colors text-lg font-medium disabled:opacity-50 disabled:cursor-wait"
                   >
-                    Go to Dashboard
-                    <ArrowRight className="w-5 h-5" />
+                    {coldStartStatus === "processing" ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Preparing Dashboard...
+                      </>
+                    ) : (
+                      <>
+                        Go to Dashboard
+                        <ArrowRight className="w-5 h-5" />
+                      </>
+                    )}
                   </button>
                 </div>
               ) : (
