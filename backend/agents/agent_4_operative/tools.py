@@ -206,9 +206,13 @@ def mutate_resume_for_job(user_id: str, job_description: str) -> dict:
         
         from pdfminer.high_level import extract_text
         raw_text = extract_text(original_pdf)
+        print(f"📄 [Agent 4] Extracted {len(raw_text)} chars from original PDF")
+        
         contact_info = parse_resume_contact(raw_text) # Helper defined below
         
         structured_data = structure_resume_content(raw_text, job_description, contact_info)
+        print(f"📋 [Agent 4] Structured data keys: {list(structured_data.keys())}")
+        print(f"📋 [Agent 4] Name: {structured_data.get('name', 'MISSING!')}")
         
         # Resolve paths
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -216,15 +220,49 @@ def mutate_resume_for_job(user_id: str, job_description: str) -> dict:
         
         latex_engine = LatexSurgeon(template_dir=template_dir)
         tex_content = latex_engine.fill_template("template.jinja", structured_data)
+        print(f"📝 [Agent 4] Generated {len(tex_content)} chars of LaTeX")
+        
         final_pdf_path = latex_engine.compile_pdf(tex_content, output_filename=f"{user_id}_optimized.pdf")
         
-        if not final_pdf_path: raise Exception("LaTeX compilation failed")
+        if not final_pdf_path: 
+            raise Exception("LaTeX compilation failed - no PDF generated")
+        
+        # Validate PDF file exists and has content
+        if not os.path.exists(final_pdf_path):
+            raise Exception(f"PDF file not found at {final_pdf_path}")
+        
+        file_size = os.path.getsize(final_pdf_path)
+        print(f"📦 [Agent 4] Generated PDF size: {file_size} bytes")
+        
+        if file_size < 1000:  # PDF should be at least 1KB
+            raise Exception(f"Generated PDF is too small ({file_size} bytes), likely corrupted")
+        
+        # Verify it's a valid PDF by checking magic bytes
+        with open(final_pdf_path, "rb") as f:
+            header = f.read(8)
+            if not header.startswith(b'%PDF'):
+                raise Exception(f"Generated file is not a valid PDF (header: {header[:20]})")
+        
+        print(f"✅ [Agent 4] PDF validation passed")
             
         public_url = upload_file(final_pdf_path, f"{user_id}_mutated.pdf")
+        
+        # Save tailored resume URL to profiles.sec_resume_url
+        try:
+            supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+            supabase.table("profiles").update({
+                "sec_resume_url": public_url
+            }).eq("user_id", user_id).execute()
+            print(f"✅ [Agent 4] Saved tailored resume URL to profiles.sec_resume_url")
+        except Exception as db_err:
+            print(f"⚠️ [Agent 4] Failed to save sec_resume_url to DB: {db_err}")
+            # Don't fail the whole request if DB update fails
         
         return {"status": "success", "pdf_url": public_url, "pdf_path": final_pdf_path}
     except Exception as e:
         print(f"❌ Mutation failed: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 def structure_resume_content(raw_text: str, jd: str, contact: dict) -> dict:
@@ -238,21 +276,61 @@ Task: Structure the raw resume text into JSON for a LaTeX template.
 Optimize the content to match the Job Description (JD).
 - Quantify achievements.
 - Use **markdown bold** for metrics/skills.
+- Extract ALL contact info from the resume (name, phone, email, linkedin, github).
 - Return ONLY valid JSON.
 
 JSON Schema:
 {{
+  "name": "Full Name from resume",
+  "phone": "Phone number or empty string",
+  "email": "Email address",
+  "linkedin": "LinkedIn URL or empty string",
+  "linkedin_display": "linkedin.com/in/username or empty string",
+  "github": "GitHub URL or empty string",  
+  "github_display": "github.com/username or empty string",
   "education": [{{"school": "...", "degree": "...", "dates": "...", "location": "..."}}],
   "experience": [{{"company": "...", "role": "...", "dates": "...", "location": "...", "bullets": ["..."]}}],
   "projects": [{{"name": "...", "tech": "...", "dates": "...", "bullets": ["..."]}}],
-  "skills": {{"languages": "...", "frameworks": "...", "tools": "..."}}
-}}"""),
+  "skills": {{"languages": "...", "frameworks": "...", "tools": "...", "libraries": "..."}}
+}}
+
+IMPORTANT: 
+- "name" is REQUIRED - extract from top of resume
+- "skills.libraries" is REQUIRED - if not found, use "N/A"
+- All string fields should have values (use empty string "" if not found, never null)"""),
         ("human", "RESUME:\n{resume}\n\nJD:\n{jd}")
     ])
     
     chain = prompt | llm | JsonOutputParser()
     data = chain.invoke({"resume": raw_text[:4000], "jd": jd[:2000]})
+    
+    # Merge contact info (LLM may have extracted it, but regex fallback is reliable)
     data.update(contact)
+    
+    # Ensure all required fields have defaults to prevent LaTeX compilation errors
+    defaults = {
+        "name": "Candidate Name",
+        "phone": "",
+        "email": "",
+        "linkedin": "",
+        "linkedin_display": "",
+        "github": "",
+        "github_display": "",
+        "education": [],
+        "experience": [],
+        "projects": [],
+        "skills": {"languages": "N/A", "frameworks": "N/A", "tools": "N/A", "libraries": "N/A"}
+    }
+    
+    for key, default_val in defaults.items():
+        if key not in data or data[key] is None:
+            data[key] = default_val
+        elif key == "skills" and isinstance(data.get("skills"), dict):
+            # Ensure all skill sub-fields exist
+            for sk in ["languages", "frameworks", "tools", "libraries"]:
+                if sk not in data["skills"] or data["skills"][sk] is None:
+                    data["skills"][sk] = "N/A"
+    
     return data
 
 def parse_resume_contact(raw_text: str) -> dict:
@@ -600,11 +678,16 @@ def download_file(user_id: str, filename: str) -> str:
 def upload_file(file_path: str, destination_name: str) -> str:
     supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
     with open(file_path, "rb") as f:
-        supabase.storage.from_("Resume").upload(destination_name, f.read(), {"upsert": "true"})
-    return supabase.storage.from_("Resume").get_public_url(destination_name)
+        file_data = f.read()
+        print(f"📦 [Agent 4] Uploading {len(file_data)} bytes to {destination_name}")
+        
+        # Set proper content-type for PDF files
+        file_options = {
+            "upsert": "true",
+            "content-type": "application/pdf"
+        }
+        supabase.storage.from_("Resume").upload(destination_name, file_data, file_options)
+    # Use signed URL for private buckets
+    res = supabase.storage.from_("Resume").create_signed_url(destination_name, 31536000) # 1 year
+    return res.get("signedURL") if isinstance(res, dict) else str(res)
 
-def fetch_user_profile(user_id: str) -> dict:
-    supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
-    response = supabase.table("profiles").select("*").eq("user_id", user_id).execute()
-    if response.data: return response.data[0]
-    return {}
