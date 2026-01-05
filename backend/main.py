@@ -23,6 +23,7 @@ from core.db import db_manager
 # 3. Agent Routers
 from agents.agent_1_perception.router import router as agent1_router 
 from agents.agent_2_market.router import router as agent2_router
+from agents.agent_3_strategist.router import router as agent3_router
 
 app = FastAPI(
     title="Career Flow AI API",
@@ -46,6 +47,7 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 app.include_router(agent1_router)  # /api/perception/*
 app.include_router(agent2_router)  # /api/market/*
+app.include_router(agent3_router)  # /api/strategist/*
 
 # -----------------------------------------------------------------------------
 # Global State
@@ -64,7 +66,7 @@ async def root():
     return {
         "status": "online",
         "version": "2.0.0",
-        "active_agents": ["Perception", "Market"]
+        "active_agents": ["Perception", "Market", "Strategist"]
     }
 
 @app.get("/api/me")
