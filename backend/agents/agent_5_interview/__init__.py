@@ -1,5 +1,6 @@
 """
 Agent 5 - Interview (Unified Chat + Voice)
+Supports Technical and HR interview types with ENV-based configuration.
 """
 from .graph import (
     chat_interview_graph,
@@ -11,7 +12,10 @@ from .graph import (
     add_chat_message,
     add_voice_message,
     run_interview_turn,
-    InterviewState
+    InterviewState,
+    get_stage_prompt,
+    get_technical_prompt,
+    get_hr_prompt
 )
 
 __all__ = [
@@ -24,5 +28,8 @@ __all__ = [
     "add_chat_message",
     "add_voice_message",
     "run_interview_turn",
-    "InterviewState"
+    "InterviewState",
+    "get_stage_prompt",
+    "get_technical_prompt",
+    "get_hr_prompt"
 ]
