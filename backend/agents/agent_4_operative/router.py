@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from datetime import datetime
 
 from .schemas import (
     GenerateResumeRequest,
+    GenerateResumeAuthenticatedRequest,
     GenerateResumeByProfileIdRequest,
     AnalyzeRejectionRequest,
     GenerateApplicationResponsesRequest,
@@ -13,6 +14,7 @@ from .schemas import (
     ErrorResponse
 )
 from .service import agent4_service
+from auth.dependencies import get_current_user
 
 
 agent4_router = APIRouter(
@@ -37,18 +39,26 @@ async def health_check():
     response_model=GenerateResumeResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}}
 )
-async def generate_resume(request: GenerateResumeRequest):
+async def generate_resume_authenticated(
+    request: GenerateResumeAuthenticatedRequest,
+    user: dict = Depends(get_current_user)
+):
     """
-    Generate an ATS-optimized resume for a user targeting a specific job.
+    Generate an ATS-optimized resume for the authenticated user targeting a specific job.
     
-    - Fetches user profile from Supabase using user_id (UUID)
+    - Uses JWT token to identify user
     - Sends profile + job description to Gemini for optimization
-    - Generates a PDF resume
-    - Returns optimized resume data and PDF path
+    - Generates a PDF resume using LaTeX
+    - Uploads to Supabase storage
+    - Returns optimized resume URL
     """
     try:
+        user_id = user.get("sub") or user.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User ID not found in token")
+        
         result = agent4_service.generate_resume(
-            user_id=request.user_id,
+            user_id=user_id,
             job_description=request.job_description,
             job_id=request.job_id
         )

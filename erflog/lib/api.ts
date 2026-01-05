@@ -354,6 +354,25 @@ export interface GenerateKitResponse {
   };
 }
 
+// Agent 4 - Generate Tailored Resume
+export interface GenerateTailoredResumeRequest {
+  job_description: string;
+  job_id?: string;
+}
+
+export interface GenerateTailoredResumeResponse {
+  success: boolean;
+  status: string;
+  user_id: string;
+  original_profile: Record<string, unknown>;
+  optimized_resume: Record<string, unknown>;
+  pdf_path: string;
+  pdf_url: string;
+  application_status: string;
+  processing_time_ms: number;
+  message: string;
+}
+
 export interface ApiError {
   detail: string;
 }
@@ -457,6 +476,21 @@ export async function interviewChat(
     job_context: jobContext,
   });
   return response.data;
+}
+
+/**
+ * Generate a tailored resume for a specific job using Agent 4's LaTeX engine.
+ * This is user-triggered (not part of cron job) to avoid heavy processing.
+ */
+export async function generateTailoredResume(
+  jobDescription: string,
+  jobId?: string
+): Promise<GenerateTailoredResumeResponse> {
+  const response = await api.post("/api/agent4/generate-resume", {
+    job_description: jobDescription,
+    job_id: jobId,
+  });
+  return response.data as GenerateTailoredResumeResponse;
 }
 
 export async function generateKit(

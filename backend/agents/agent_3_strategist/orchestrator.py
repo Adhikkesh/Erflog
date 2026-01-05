@@ -297,8 +297,8 @@ def generate_tailored_resume(
         Dictionary with status, pdf_url (if success), or error message
     """
     try:
-        # Import Agent 4's mutate function
-        from backend.agents.agent_4_operative.tools import mutate_resume_for_job
+        # Import Agent 4's mutate function (relative import from sibling package)
+        from agents.agent_4_operative.tools import mutate_resume_for_job
         
         # Build job description string for the optimizer
         job_title = job.get("title", "Position")
@@ -353,7 +353,8 @@ def enrich_jobs_node(state: OrchestratorState) -> dict:
     - Jobs with score >= 0.80: No roadmap needed (high match)
     - Jobs with score < 0.80: Generate roadmap
     - All jobs: Generate default application text
-    - All jobs: Generate tailored resume (LaTeX -> PDF -> Supabase)
+    
+    Note: Resume generation is user-triggered (not part of cron) to avoid heavy processing.
     """
     jobs = state.get("jobs", [])
     user_id = state.get("user_id")
@@ -390,15 +391,8 @@ def enrich_jobs_node(state: OrchestratorState) -> dict:
         logger.info(f"  → Generating application text")
         enriched_job["application_text"] = generate_application_text(user_profile, job)
         
-        # Generate tailored resume for ALL jobs (Agent 4 - LaTeX)
-        logger.info(f"  → Generating tailored resume (LaTeX)")
-        resume_result = generate_tailored_resume(user_id, job)
-        if resume_result and resume_result.get("status") == "success":
-            enriched_job["resume_url"] = resume_result.get("pdf_url")
-            logger.info(f"  ✅ Resume uploaded: {enriched_job['resume_url'][:50]}...")
-        else:
-            enriched_job["resume_url"] = None
-            logger.warning(f"  ⚠️ Resume generation failed: {resume_result.get('message', 'Unknown error')}")
+        # Resume URL is null - user will generate on-demand via Apply page
+        enriched_job["resume_url"] = None
         
         enriched_jobs.append(enriched_job)
     

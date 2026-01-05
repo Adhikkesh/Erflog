@@ -25,28 +25,57 @@ def generate_resume(user_id: str = None, job_description: str = None, job_id: st
     Returns:
         Dict with pdf_url, changes_made, etc.
     """
+    import time
+    start_time = time.time()
+    
     if not user_id:
         return {
+            "success": False,
             "status": "error",
-            "error": "user_id is required",
+            "user_id": "",
+            "original_profile": {},
+            "optimized_resume": {},
+            "pdf_path": "",
+            "pdf_url": "",
+            "application_status": "failed",
+            "processing_time_ms": 0,
             "message": "Please provide a user_id."
         }
     
     if not job_description:
         return {
+            "success": False,
             "status": "error", 
-            "error": "job_description is required",
+            "user_id": user_id,
+            "original_profile": {},
+            "optimized_resume": {},
+            "pdf_path": "",
+            "pdf_url": "",
+            "application_status": "failed",
+            "processing_time_ms": 0,
             "message": "Please provide a job description."
         }
     
     # Use the new mutation flow
     result = mutate_resume_for_job(user_id, job_description)
     
-    # Add additional fields for API response compatibility
-    result["application_status"] = "ready" if result.get("status") == "success" else "failed"
-    result["optimized_resume"] = {
-        "changes": result.get("replacements", []),
-        "keywords": result.get("keywords_added", [])
+    processing_time = int((time.time() - start_time) * 1000)
+    
+    # Build response compatible with GenerateResumeResponse schema
+    response = {
+        "success": result.get("status") == "success",
+        "status": result.get("status", "error"),
+        "user_id": user_id,
+        "original_profile": {},  # Not needed for this flow
+        "optimized_resume": {
+            "changes": result.get("replacements", []),
+            "keywords": result.get("keywords_added", [])
+        },
+        "pdf_path": result.get("pdf_path", ""),
+        "pdf_url": result.get("pdf_url", ""),
+        "application_status": "ready" if result.get("status") == "success" else "failed",
+        "processing_time_ms": processing_time,
+        "message": result.get("message", "Resume generated successfully" if result.get("status") == "success" else "Failed to generate resume")
     }
     
     # Save to DB if job_id is present and result was successful
@@ -59,13 +88,13 @@ def generate_resume(user_id: str = None, job_description: str = None, job_id: st
                 user_id=user_id,
                 job_id=job_id_int,
                 tailored_resume_url=result.get("pdf_url"),
-                custom_responses=result.get("optimized_resume")
+                custom_responses=response.get("optimized_resume")
             )
         except Exception as e:
             print(f"⚠️ [Agent 4] Failed to save application to DB: {e}")
             # Don't fail the whole request if DB save fails
             
-    return result
+    return response
 
 
 # Singleton instance

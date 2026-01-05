@@ -3,7 +3,7 @@
 import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { useSession } from "@/lib/SessionContext";
-import { getTodayJobs, TodayDataItem, ApplicationText } from "@/lib/api";
+import { getTodayJobs, generateTailoredResume, TodayDataItem } from "@/lib/api";
 import {
   Loader2,
   Download,
@@ -13,6 +13,7 @@ import {
   ExternalLink,
   FileText,
   Sparkles,
+  Wand2,
 } from "lucide-react";
 
 export default function ApplyPage() {
@@ -25,6 +26,11 @@ export default function ApplyPage() {
   const [job, setJob] = useState<TodayDataItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // State for resume generation
+  const [resumeUrl, setResumeUrl] = useState<string | null>(null);
+  const [isGeneratingResume, setIsGeneratingResume] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   // State for copied indicators
   const [copied, setCopied] = useState<string | null>(null);
@@ -101,8 +107,46 @@ export default function ApplyPage() {
   };
 
   const handleDownloadResume = () => {
-    if (job?.resume_url) {
-      window.open(job.resume_url, "_blank");
+    if (resumeUrl) {
+      window.open(resumeUrl, "_blank");
+    }
+  };
+
+  const handleGenerateResume = async () => {
+    if (!job) return;
+
+    setIsGeneratingResume(true);
+    setResumeError(null);
+
+    try {
+      // Build job description for the API
+      const jobDescription = `
+Job Title: ${job.title}
+Company: ${job.company}
+
+Description:
+${job.summary || ""}
+
+Platform: ${job.platform || ""}
+Location: ${job.location || ""}
+      `.trim();
+
+      const result = await generateTailoredResume(jobDescription, job.id);
+
+      if (result.success && result.pdf_url) {
+        setResumeUrl(result.pdf_url);
+      } else {
+        setResumeError(
+          result.message || "Failed to generate resume. Please try again."
+        );
+      }
+    } catch (err) {
+      console.error("Resume generation error:", err);
+      setResumeError(
+        "Failed to generate resume. Please ensure you have uploaded your resume on the home page."
+      );
+    } finally {
+      setIsGeneratingResume(false);
     }
   };
 
@@ -203,24 +247,37 @@ export default function ApplyPage() {
         >
           <div className="flex items-start gap-6">
             <div
-              className="w-16 h-16 rounded-xl flex items-center justify-center flex-shrink-0"
+              className="w-16 h-16 rounded-xl flex items-center justify-center shrink-0"
               style={{
-                backgroundColor: job.resume_url ? "#22c55e" : "#6b7280",
+                backgroundColor: resumeUrl ? "#22c55e" : "#D95D39",
               }}
             >
-              <FileText className="w-8 h-8 text-white" />
+              {isGeneratingResume ? (
+                <Loader2 className="w-8 h-8 text-white animate-spin" />
+              ) : (
+                <FileText className="w-8 h-8 text-white" />
+              )}
             </div>
             <div className="flex-1">
               <h2 className="font-serif-bold text-2xl text-ink mb-2">
                 Tailored Resume
               </h2>
               <p className="text-secondary mb-6">
-                {job.resume_url
-                  ? `Your resume has been automatically optimized for this ${job.title} position at ${job.company}. It highlights the most relevant skills and experiences.`
-                  : `A tailored resume for this position is not yet available. This may happen if the daily processing is still in progress.`}
+                {resumeUrl
+                  ? `Your resume has been optimized for this ${job.title} position at ${job.company}. It highlights the most relevant skills and experiences.`
+                  : `Generate a tailored resume optimized for this ${job.title} position. Our AI will rewrite your resume to highlight relevant skills and experiences.`}
               </p>
 
-              {job.resume_url ? (
+              {resumeError && (
+                <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200">
+                  <p className="text-sm text-red-700 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    {resumeError}
+                  </p>
+                </div>
+              )}
+
+              {resumeUrl ? (
                 <div className="flex flex-wrap gap-3">
                   <button
                     onClick={handleDownloadResume}
@@ -231,7 +288,7 @@ export default function ApplyPage() {
                     Download Tailored Resume
                   </button>
                   <a
-                    href={job.resume_url}
+                    href={resumeUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-3 px-6 py-3 rounded-lg font-medium border transition-all hover:bg-gray-50"
@@ -240,12 +297,44 @@ export default function ApplyPage() {
                     <ExternalLink className="w-5 h-5" />
                     Open in New Tab
                   </a>
+                  <button
+                    onClick={() => {
+                      setResumeUrl(null);
+                      setResumeError(null);
+                    }}
+                    className="inline-flex items-center gap-3 px-6 py-3 rounded-lg font-medium border transition-all hover:bg-gray-50 text-secondary"
+                    style={{ borderColor: "#E5E0D8" }}
+                  >
+                    <Wand2 className="w-5 h-5" />
+                    Regenerate
+                  </button>
                 </div>
               ) : (
-                <div className="p-4 rounded-lg bg-yellow-50 border border-yellow-200">
-                  <p className="text-sm text-yellow-700 flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4" />
-                    Resume will be generated during the next daily update.
+                <button
+                  onClick={handleGenerateResume}
+                  disabled={isGeneratingResume}
+                  className="inline-flex items-center gap-3 px-6 py-3 rounded-lg font-medium text-white transition-all hover:opacity-90 disabled:opacity-50"
+                  style={{ backgroundColor: "#D95D39" }}
+                >
+                  {isGeneratingResume ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      Generating Resume...
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="w-5 h-5" />
+                      Generate Tailored Resume
+                    </>
+                  )}
+                </button>
+              )}
+
+              {isGeneratingResume && (
+                <div className="mt-4 p-4 rounded-lg bg-blue-50 border border-blue-200">
+                  <p className="text-sm text-blue-700">
+                    ⏳ This may take 15-30 seconds. We&apos;re analyzing your
+                    resume and optimizing it for this specific job...
                   </p>
                 </div>
               )}

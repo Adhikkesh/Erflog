@@ -12,6 +12,12 @@ class GenerateResumeRequest(BaseModel):
     job_id: Optional[str] = Field(None, description="Optional job ID if fetching from database")
 
 
+class GenerateResumeAuthenticatedRequest(BaseModel):
+    """Request to generate an optimized resume for authenticated user (no user_id needed)."""
+    job_description: str = Field(..., description="Target job description text")
+    job_id: Optional[str] = Field(None, description="Optional job ID if fetching from database")
+
+
 class GenerateResumeByProfileIdRequest(BaseModel):
     """Request using profile ID instead of UUID."""
     profile_id: int = Field(..., description="Profile ID from Supabase profiles table")
