@@ -1,5 +1,5 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+# Use Ubuntu-based Python image (better Playwright compatibility)
+FROM python:3.11-slim-bookworm
 
 # 1. Install System Dependencies
 # Added 'libreoffice' for DOCX support if needed (replaces docx2pdf)
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # WeasyPrint dependencies
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     libffi-dev \
     shared-mime-info \
     # LibreOffice for DOCX -> PDF conversion (Linux alternative to docx2pdf)
@@ -26,6 +26,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     default-jre \
     # General build tools
     build-essential \
+    # Playwright/Chromium dependencies (manual install for Debian)
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libgtk-3-0 \
+    fonts-liberation \
+    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Set the working directory
@@ -39,8 +57,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -m spacy download en_core_web_sm
 
 # 5. Install Playwright Browsers
-# Now this works because 'playwright' is in requirements.txt
-RUN playwright install-deps chromium
+# Dependencies already installed in step 1, just install the browser
 RUN playwright install chromium
 
 # 6. Copy the rest of the application code

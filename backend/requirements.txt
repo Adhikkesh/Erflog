@@ -26,7 +26,7 @@ google-cloud-speech==2.27.0
 google-cloud-texttospeech==2.17.2
 websockets>=13.0
 PyMuPDF==1.24.14
-requests==2.31.0
+requests>=2.32.3
 # --- NEW ADDITIONS ---
 playwright==1.49.0
 browser-use==0.1.0
