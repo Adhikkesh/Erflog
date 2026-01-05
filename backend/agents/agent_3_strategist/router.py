@@ -13,7 +13,7 @@ Provides endpoints for:
 """
 
 import os
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, BackgroundTasks
 from auth.dependencies import get_current_user
 from .service import get_strategist_service
 
@@ -302,6 +302,34 @@ async def run_daily_cron(
         "users_processed": result.get("users_processed", 0),
         "users_failed": result.get("users_failed", 0),
         "timestamp": result.get("timestamp")
+    }
+
+
+@router.post("/cold-start")
+async def trigger_cold_start(
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Trigger cold start processing for a newly onboarded user.
+    Runs the full Strategist pipeline (jobs, hackathons, news, roadmaps) for this user only.
+    
+    This endpoint is called after onboarding completion to immediately populate
+    the user's personalized data instead of waiting for the 2AM cron job.
+    """
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found")
+    
+    service = get_strategist_service()
+    
+    # Run in background so user doesn't have to wait for full processing
+    background_tasks.add_task(service.process_single_user, user_id)
+    
+    return {
+        "status": "processing",
+        "message": "Generating your personalized data. This may take 30-60 seconds.",
+        "user_id": user_id
     }
 
 
