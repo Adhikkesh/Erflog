@@ -44,4 +44,4 @@ env/
 # Node (if frontend exists)
 node_modules/
 .next/
-out/
+out/backend/credential.json
