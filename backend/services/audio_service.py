@@ -1,7 +1,9 @@
 import os
 from google.cloud import speech, texttospeech
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credential.json"
+# Set credentials path - Docker sets this via ENV, fallback for local dev
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credential.json"
 
 speech_client = speech.SpeechClient()
 tts_client = texttospeech.TextToSpeechClient()

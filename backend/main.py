@@ -44,9 +44,34 @@ app = FastAPI(
 # =============================================================================
 # Middleware
 # =============================================================================
+
+# CORS Configuration - Allow both local development and production URLs
+allowed_origins = [
+    # Local development
+    "http://localhost:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+    # Production URLs - Add your actual URLs here after deployment
+    "https://erflog.vercel.app",
+    "https://www.erflog.vercel.app",
+    # Cloud Run URLs will be added dynamically via environment variable
+]
+
+# Add Cloud Run URL from environment if available
+import os
+cloud_run_url = os.getenv("CLOUD_RUN_URL")
+if cloud_run_url:
+    allowed_origins.append(cloud_run_url)
+
+# Add frontend URL from environment if available
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    allowed_origins.append(frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
