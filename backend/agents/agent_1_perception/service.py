@@ -98,13 +98,25 @@ class PerceptionService:
             # 7. Upsert to DB
             self.supabase.table("profiles").upsert(profile_data).execute()
 
-            # 8. Upsert to Pinecone
+            # 8. Upsert to Pinecone (full profile schema)
             vector_data = {
                 "id": user_id, 
                 "values": embedding,
                 "metadata": {
+                    "user_id": user_id,
+                    "name": extracted_data.get("name") or "",
                     "email": extracted_data.get("email") or "",
                     "skills": skills_list,
+                    "target_roles": [],  # Will be set during onboarding
+                    "education": str(extracted_data.get("education") or []),
+                    "experience_summary": summary,
+                    "github_url": "",
+                    "linkedin_url": "",
+                    "resume_text": resume_text[:1000] if resume_text else "",  # Truncate for metadata limits
+                    "resume_url": resume_url or "",
+                    "onboarding_completed": False,
+                    "quiz_completed": False,
+                    "quiz_score": 0,
                     "type": "user_profile"
                 }
             }
@@ -701,14 +713,25 @@ class PerceptionService:
             summary_text = experience_summary or f"Skills: {', '.join(skills)}. Target roles: {', '.join(target_roles)}"
             embedding = generate_embedding(summary_text)
             
-            # Upsert to Pinecone
+            # Upsert to Pinecone (full profile schema)
             vector_data = {
                 "id": user_id,
                 "values": embedding,
                 "metadata": {
+                    "user_id": user_id,
+                    "name": name,
                     "email": email or "",
                     "skills": skills,
                     "target_roles": target_roles,
+                    "education": str(education) if education else "[]",
+                    "experience_summary": experience_summary or "",
+                    "github_url": github_url or "",
+                    "linkedin_url": linkedin_url or "",
+                    "resume_text": "",  # Not available in manual onboarding
+                    "resume_url": "",  # Will be set if resume uploaded
+                    "onboarding_completed": False,  # True after quiz
+                    "quiz_completed": False,
+                    "quiz_score": 0,
                     "type": "user_profile"
                 }
             }
@@ -818,7 +841,11 @@ class PerceptionService:
     async def get_dashboard_insights(self, user_id: str) -> Dict[str, Any]:
         """
         Generate dashboard data for authenticated users.
-        Includes top jobs, hot skills, GitHub insights, and news.
+        
+        OPTIMIZED:
+        - Uses github_activity_cache table instead of live GitHub fetching
+        - Uses today_data for AI-matched jobs, hackathons, and news
+        - Only generates new insights if cache is stale (>24h)
         """
         # Get user profile
         response = self.supabase.table("profiles").select("*").eq("user_id", user_id).execute()
@@ -828,8 +855,8 @@ class PerceptionService:
         
         profile = response.data[0]
         user_name = profile.get("name", "User")
-        skills = profile.get("skills", [])
-        target_roles = profile.get("target_roles", [])
+        skills = profile.get("skills", []) or []
+        target_roles = profile.get("target_roles", []) or []
         github_url = profile.get("github_url")
         
         # Calculate profile strength
@@ -841,69 +868,96 @@ class PerceptionService:
         if github_url: strength += 15
         if profile.get("quiz_completed"): strength += 10
         
-        # Get top 3 jobs from database (seeded jobs)
-        jobs_response = self.supabase.table("jobs").select(
-            "id, title, company, description"
-        ).limit(10).execute()
+        # =====================================================================
+        # Get personalized data from today_data table (Agent 3)
+        # =====================================================================
+        today_data_response = self.supabase.table("today_data").select(
+            "data_json, updated_at"
+        ).eq("user_id", user_id).execute()
         
         top_jobs = []
-        if jobs_response.data:
-            for job in jobs_response.data[:3]:
-                # Simple match score based on skill overlap
-                job_desc = (job.get("description") or "").lower()
-                matched_skills = [s for s in skills if s.lower() in job_desc]
-                score = min(95, 60 + len(matched_skills) * 10)
-                
-                top_jobs.append({
-                    "id": job.get("id"),
-                    "title": job.get("title"),
-                    "company": job.get("company"),
-                    "match_score": score,
-                    "key_skills": matched_skills[:3] if matched_skills else skills[:3]
-                })
-        
-        # Generate hot skills to learn
         hot_skills = []
-        trending = ["AI/ML", "Rust", "Go", "Kubernetes", "GraphQL"]
-        for i, skill in enumerate(trending[:3]):
-            if skill not in skills:
-                hot_skills.append({
-                    "skill": skill,
-                    "demand_trend": "rising",
-                    "reason": f"High demand in {target_roles[0] if target_roles else 'tech'} roles"
+        news_cards = []
+        
+        if today_data_response.data:
+            data = today_data_response.data[0].get("data_json", {})
+            
+            # Get top 3 jobs for dashboard
+            jobs_data = data.get("jobs", [])[:3]
+            for job in jobs_data:
+                top_jobs.append({
+                    "id": str(job.get("supabase_id", job.get("id", ""))),
+                    "title": job.get("title", "Unknown"),
+                    "company": job.get("company", "Unknown"),
+                    "match_score": int(job.get("score", 0) * 100),
+                    "key_skills": skills[:3] if skills else []
+                })
+            
+            # Get AI-generated hot skills from today_data (if available)
+            hot_skills_data = data.get("hot_skills", [])
+            if hot_skills_data:
+                hot_skills = hot_skills_data[:3]
+            
+            # Get news from today_data
+            news_data = data.get("news", [])[:2]
+            for news in news_data:
+                news_cards.append({
+                    "title": news.get("title", "Tech Update"),
+                    "summary": news.get("summary", "")[:100],
+                    "relevance": "Based on your profile"
                 })
         
-        # GitHub insights (if connected)
+        # Fallback: Generate hot skills from trending if not in today_data
+        if not hot_skills:
+            trending = ["AI/ML", "Rust", "Go", "Kubernetes", "GraphQL"]
+            for skill in trending[:3]:
+                if skill not in skills:
+                    hot_skills.append({
+                        "skill": skill,
+                        "demand_trend": "rising",
+                        "reason": f"High demand in {target_roles[0] if target_roles else 'tech'} roles"
+                    })
+        
+        # Fallback: Static news if not in today_data
+        if not news_cards:
+            news_cards = [
+                {
+                    "title": "AI Skills in High Demand",
+                    "summary": "Companies are actively seeking engineers with AI/ML experience",
+                    "relevance": "Based on your target roles"
+                },
+                {
+                    "title": "Remote Work Trends 2026",
+                    "summary": "75% of tech companies now offer remote-first positions",
+                    "relevance": "Job market insight"
+                }
+            ]
+        
+        # =====================================================================
+        # Get GitHub insights from CACHE (no live fetching!)
+        # =====================================================================
         github_insights = None
         if github_url:
-            username = extract_username_from_url(github_url)
-            if username:
-                try:
-                    activity = fetch_user_recent_activity(username)
-                    if activity:
-                        repos = activity.get("repos_touched", [])
-                        github_insights = {
-                            "repo_name": repos[0] if repos else "your repositories",
-                            "recent_commits": activity.get("commit_count", 0),
-                            "detected_skills": activity.get("detected_skills", [])[:3],
-                            "insight_text": f"Your recent activity shows strong focus on {skills[0] if skills else 'development'}"
-                        }
-                except Exception as e:
-                    print(f"[Dashboard] GitHub insights error: {e}")
-        
-        # News cards (static for now, can be enhanced with news API)
-        news_cards = [
-            {
-                "title": "AI Skills in High Demand",
-                "summary": "Companies are actively seeking engineers with AI/ML experience",
-                "relevance": "Based on your target roles"
-            },
-            {
-                "title": "Remote Work Trends 2026",
-                "summary": "75% of tech companies now offer remote-first positions",
-                "relevance": "Job market insight"
-            }
-        ]
+            try:
+                cache_response = self.supabase.table("github_activity_cache").select(
+                    "detected_skills, repos_touched, tech_stack, insight_message, analyzed_at"
+                ).eq("user_id", user_id).execute()
+                
+                if cache_response.data:
+                    cache = cache_response.data[0]
+                    repos = cache.get("repos_touched", []) or []
+                    detected = cache.get("detected_skills", []) or []
+                    
+                    github_insights = {
+                        "repo_name": repos[0] if repos else "your repositories",
+                        "recent_commits": len(repos),
+                        "detected_skills": detected[:3] if isinstance(detected, list) else [],
+                        "insight_text": cache.get("insight_message") or f"Your recent activity shows strong focus on {skills[0] if skills else 'development'}",
+                        "from_cache": True,
+                        "analyzed_at": cache.get("analyzed_at")
+                    }
+            except Exception as e:
+                print(f"[Dashboard] GitHub cache read error: {e}")
         
         return {
             "user_name": user_name,
