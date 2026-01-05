@@ -11,6 +11,7 @@ import {
   MessageCircle,
   Mic,
   MessageSquare,
+  Trophy,
 } from "lucide-react";
 
 export default function Sidebar() {
@@ -103,7 +104,27 @@ export default function Sidebar() {
             </Link>
           </li>
 
-          {/* Mock Interview - Single Link */}
+          {/* Hackathons */}
+          <li>
+            <Link
+              href="/hackathons"
+              className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-medium transition-colors ${
+                isActive("/hackathons")
+                  ? "bg-accent text-surface"
+                  : "text-ink hover:bg-surface"
+              }`}
+              style={
+                isActive("/hackathons")
+                  ? { backgroundColor: "#D95D39", color: "#FFFFFF" }
+                  : { color: "#1A1A1A" }
+              }
+            >
+              <Trophy size={20} />
+              Hackathons
+            </Link>
+          </li>
+
+          {/* Interview Practice */}
           <li>
             <Link
               href="/interview"

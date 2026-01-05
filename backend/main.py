@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 
-# Load env FIRST before any other imports
+# 1. Load env FIRST
 load_dotenv()
 
 # Configure logging ONCE here - before any other imports
@@ -26,12 +26,12 @@ logger = logging.getLogger("Main")
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
-# --- IMPORTS FOR AGENTS & DB ---
+# 2. Auth & DB
+from auth.dependencies import get_current_user
 from core.state import AgentState
-from core.db import db_manager  # Database connection
+from core.db import db_manager
 
 # Import routers
 from agents.agent_4_operative import agent4_router
@@ -63,89 +63,38 @@ from core.state import AgentState
 
 app = FastAPI(
     title="Career Flow AI API",
-    description="AI-powered career automation system with Multi-Agent Workflow",
+    description="AI-powered career automation system",
     version="2.0.0"
 )
 
-# CORS middleware
+# -----------------------------------------------------------------------------
+# Middleware
+# -----------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(agent4_router)
+# -----------------------------------------------------------------------------
+# Mount Routers
+# -----------------------------------------------------------------------------
+app.include_router(agent1_router)  # /api/perception/*
+app.include_router(agent2_router)  # /api/market/*
+app.include_router(agent3_router)  # /api/strategist/*
 
 # -----------------------------------------------------------------------------
-# Global Session Store
+# Global State
 # -----------------------------------------------------------------------------
 SESSIONS: Dict[str, AgentState] = {}
 
-# -----------------------------------------------------------------------------
-# Pydantic Models
-# -----------------------------------------------------------------------------
-class AnalyzeRequest(BaseModel):
-    query: Optional[str] = None
-    context: Optional[dict] = None
-
-class SearchRequest(BaseModel):
-    query: str
-
-class KitRequest(BaseModel):
-    user_name: str
-    job_title: str
-    job_company: str
-    session_id: Optional[str] = None  # Add session_id support
-    job_description: Optional[str] = None  # Add job description
-
-class SessionRequest(BaseModel):
-    session_id: str
-
-class MarketScanRequest(BaseModel):
-    session_id: str
-
-class StrategyRequest(BaseModel):
-    query: str  # Skills/experience to search for jobs
-
-class ApplicationRequest(BaseModel):
-    session_id: str
-    job_description: Optional[str] = None
-
-class InterviewRequest(BaseModel):
-    session_id: str         # Unique session identifier for conversation state
-    user_message: str = ""  # Empty for first turn (start interview)
-    job_context: str        # Job title/description
-
-# --- NEW MODEL FOR GITHUB SYNC ---
-class GithubSyncRequest(BaseModel):
-    session_id: str
-    github_url: str
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-def get_session(session_id: str) -> AgentState:
-    """Retrieve session state or raise 404."""
-    if session_id not in SESSIONS:
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
-    return SESSIONS[session_id]
-
-
 def initialize_state() -> AgentState:
-    """Create a fresh AgentState with default values."""
-    return AgentState(
-        resume_text=None,
-        skills=[],
-        user_id=None,
-        context={},
-        results={}
-    )
+    return AgentState(resume_text=None, skills=[], user_id=None, context={}, results={})
 
 # -----------------------------------------------------------------------------
-# ENDPOINTS
+# Core Endpoints
 # -----------------------------------------------------------------------------
 
 # --- Pydantic Models ---
@@ -165,7 +114,7 @@ class KitRequest(BaseModel):
 @app.get("/")
 async def root():
     return {
-        "message": "Career Flow AI API Online",
+        "status": "online",
         "version": "2.0.0",
         "agents_active": 6,
         "endpoints": {
@@ -177,6 +126,13 @@ async def root():
         }
     }
 
+@app.get("/api/me")
+async def get_me(user=Depends(get_current_user)):
+    return {
+        "user_id": user["sub"],
+        "email": user.get("email"),
+        "provider": user.get("app_metadata", {}).get("provider")
+    }
 
 @app.get("/health")
 async def health():
@@ -410,8 +366,7 @@ async def generate_kit_endpoint(request: KitRequest):
 async def init_session():
     session_id = str(uuid.uuid4())
     SESSIONS[session_id] = initialize_state()
-    print(f"[Orchestrator] New session initialized: {session_id}")
-    return {"status": "success", "session_id": session_id, "message": "Session initialized."}
+    return {"status": "success", "session_id": session_id}
 
 
 @app.post("/api/upload-resume")
@@ -1147,5 +1102,4 @@ async def interview_endpoint(websocket: WebSocket, job_id: str):
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
