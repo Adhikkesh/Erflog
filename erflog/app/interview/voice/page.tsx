@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "@/lib/SessionContext";
+import { useAuth } from "@/lib/AuthContext";
 import {
   Mic,
   MicOff,
@@ -25,7 +26,14 @@ const WS_URL =
 
 type InterviewType = "TECHNICAL" | "HR";
 type AudioState = "idle" | "thinking" | "speaking" | "listening";
-type InterviewStage = "intro" | "resume" | "behavioral" | "experience" | "challenge" | "conclusion" | "end";
+type InterviewStage =
+  | "intro"
+  | "resume"
+  | "behavioral"
+  | "experience"
+  | "challenge"
+  | "conclusion"
+  | "end";
 
 interface TranscriptEntry {
   id: string;
@@ -40,6 +48,7 @@ interface Feedback {
   summary?: string;
   strengths?: string[];
   improvements?: string[];
+  interview_type?: string;
 }
 
 interface InterviewHistoryItem {
@@ -56,8 +65,13 @@ function VoiceInterviewContent() {
   const searchParams = useSearchParams();
   const jobId = searchParams.get("jobId") || "1";
   const { session, accessToken, profile } = useSession();
+  const { userMetadata } = useAuth();
 
-  const [interviewType, setInterviewType] = useState<InterviewType>("TECHNICAL");
+  // Get user ID from auth context
+  const userId = userMetadata.userId;
+
+  const [interviewType, setInterviewType] =
+    useState<InterviewType>("TECHNICAL");
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [audioState, setAudioState] = useState<AudioState>("idle");
@@ -99,14 +113,16 @@ function VoiceInterviewContent() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
 
-  // Fetch history - using hardcoded user_id for now
-  const HARDCODED_USER_ID = "d5040da0-aca7-4ba7-a96b-80e4c9ee1c44";
-  
+  // Fetch history using auth user ID
   useEffect(() => {
+    if (!userId) return;
+
     const fetchHistory = async () => {
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/interviews/${HARDCODED_USER_ID}`
+          `${
+            process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+          }/api/interviews/${userId}`
         );
         if (response.ok) {
           const data = await response.json();
@@ -119,7 +135,7 @@ function VoiceInterviewContent() {
       }
     };
     fetchHistory();
-  }, [feedback]);
+  }, [feedback, userId]);
 
   // Play audio from queue - when audio finishes, set state to listening
   const playNextAudio = useCallback(async () => {
@@ -135,7 +151,7 @@ function VoiceInterviewContent() {
     audio.onended = () => {
       URL.revokeObjectURL(audioUrl);
       isPlayingRef.current = false;
-      
+
       // When audio finishes playing, check if more in queue
       if (audioQueueRef.current.length > 0) {
         playNextAudio();
@@ -257,12 +273,13 @@ function VoiceInterviewContent() {
 
       ws.onopen = () => {
         console.log("[Frontend] WebSocket connected");
-        
+
         // Send auth and config first
         ws.send(
           JSON.stringify({
             access_token: accessToken || "test",
             interview_type: interviewType,
+            user_id: userId,
           })
         );
 
@@ -272,8 +289,8 @@ function VoiceInterviewContent() {
         processor.onaudioprocess = (e) => {
           // Only send audio if we're in listening state and not muted
           if (
-            ws.readyState === WebSocket.OPEN && 
-            audioStateRef.current === "listening" && 
+            ws.readyState === WebSocket.OPEN &&
+            audioStateRef.current === "listening" &&
             !isMuted
           ) {
             const inputData = e.inputBuffer.getChannelData(0);
@@ -381,13 +398,37 @@ function VoiceInterviewContent() {
   const getAudioStateDisplay = () => {
     switch (audioState) {
       case "thinking":
-        return { icon: Loader2, text: "AI is thinking...", color: "#F59E0B", animate: true, bgColor: "bg-yellow-50" };
+        return {
+          icon: Loader2,
+          text: "AI is thinking...",
+          color: "#F59E0B",
+          animate: true,
+          bgColor: "bg-yellow-50",
+        };
       case "speaking":
-        return { icon: Volume2, text: "AI is speaking...", color: "#D95D39", animate: true, bgColor: "bg-orange-50" };
+        return {
+          icon: Volume2,
+          text: "AI is speaking...",
+          color: "#D95D39",
+          animate: true,
+          bgColor: "bg-orange-50",
+        };
       case "listening":
-        return { icon: Mic, text: "Your turn - speak now!", color: "#10B981", animate: false, bgColor: "bg-green-50" };
+        return {
+          icon: Mic,
+          text: "Your turn - speak now!",
+          color: "#10B981",
+          animate: false,
+          bgColor: "bg-green-50",
+        };
       default:
-        return { icon: Mic, text: "Ready", color: "#6B7280", animate: false, bgColor: "bg-slate-50" };
+        return {
+          icon: Mic,
+          text: "Ready",
+          color: "#6B7280",
+          animate: false,
+          bgColor: "bg-slate-50",
+        };
     }
   };
 
@@ -403,7 +444,10 @@ function VoiceInterviewContent() {
             <div className="flex items-center gap-3">
               <div
                 className="w-12 h-12 rounded-xl flex items-center justify-center shadow-lg"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 <Bot className="w-6 h-6 text-white" />
               </div>
@@ -440,7 +484,8 @@ function VoiceInterviewContent() {
                 className="h-full transition-all duration-500 ease-out rounded-full"
                 style={{
                   width: `${getStageProgress()}%`,
-                  background: "linear-gradient(90deg, #10B981, #3B82F6, #8B5CF6, #D95D39)",
+                  background:
+                    "linear-gradient(90deg, #10B981, #3B82F6, #8B5CF6, #D95D39)",
                 }}
               />
             </div>
@@ -497,11 +542,13 @@ function VoiceInterviewContent() {
 
             <div
               className="w-28 h-28 rounded-full flex items-center justify-center mb-6 shadow-xl"
-              style={{ background: "linear-gradient(135deg, #FFF7ED 0%, #FED7AA 100%)" }}
+              style={{
+                background: "linear-gradient(135deg, #FFF7ED 0%, #FED7AA 100%)",
+              }}
             >
               <Mic className="w-14 h-14" style={{ color: "#D95D39" }} />
             </div>
-            
+
             <h2 className="text-3xl font-bold text-slate-900 mb-3">
               Ready to Practice?
             </h2>
@@ -513,7 +560,9 @@ function VoiceInterviewContent() {
             <button
               onClick={startInterview}
               className="px-8 py-4 rounded-xl text-white font-medium flex items-center gap-3 transition-all hover:scale-105 shadow-lg hover:shadow-xl"
-              style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+              style={{
+                background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+              }}
             >
               <Phone className="w-5 h-5" />
               Start {interviewType} Interview
@@ -526,71 +575,81 @@ function VoiceInterviewContent() {
                 Past Sessions
               </h3>
 
-                {isLoadingHistory ? (
-                  <div className="flex justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
-                  </div>
-                ) : history.length === 0 ? (
-                  <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                    <p className="text-slate-500">No past interviews found.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {history.slice(0, 5).map((item) => (
-                      <button
-                        key={item.id}
-                        onClick={() => setFeedback(item.feedback_report)}
-                        className="w-full bg-white p-4 rounded-xl border border-slate-200 hover:border-orange-300 hover:shadow-md transition-all flex items-center justify-between group text-left"
-                      >
-                        <div className="flex items-center gap-4">
-                          <div
-                            className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 font-bold ${
-                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
-                                ? "bg-green-100 text-green-600"
-                                : "bg-orange-100 text-orange-600"
-                            }`}
-                          >
-                            {item.feedback_report?.score || "?"}
-                          </div>
-                          <div>
-                            <div className="font-medium text-slate-900">
-                              {new Date(item.created_at).toLocaleDateString(undefined, {
+              {isLoadingHistory ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+                </div>
+              ) : history.length === 0 ? (
+                <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                  <p className="text-slate-500">No past interviews found.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {history.slice(0, 5).map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => setFeedback(item.feedback_report)}
+                      className="w-full bg-white p-4 rounded-xl border border-slate-200 hover:border-orange-300 hover:shadow-md transition-all flex items-center justify-between group text-left"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div
+                          className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 font-bold ${
+                            item.feedback_report?.verdict
+                              ?.toLowerCase()
+                              .includes("hire")
+                              ? "bg-green-100 text-green-600"
+                              : "bg-orange-100 text-orange-600"
+                          }`}
+                        >
+                          {item.feedback_report?.score || "?"}
+                        </div>
+                        <div>
+                          <div className="font-medium text-slate-900">
+                            {new Date(item.created_at).toLocaleDateString(
+                              undefined,
+                              {
                                 month: "short",
                                 day: "numeric",
                                 year: "numeric",
-                              })}
-                            </div>
-                            <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
-                              <Clock className="w-3 h-3" />
-                              {new Date(item.created_at).toLocaleTimeString(undefined, {
+                              }
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                            <Clock className="w-3 h-3" />
+                            {new Date(item.created_at).toLocaleTimeString(
+                              undefined,
+                              {
                                 hour: "2-digit",
                                 minute: "2-digit",
-                              })}
-                              {item.interview_type && (
-                                <span className="ml-2 px-2 py-0.5 bg-slate-100 rounded text-xs">
-                                  {item.interview_type}
-                                </span>
-                              )}
-                            </div>
+                              }
+                            )}
+                            {item.feedback_report?.interview_type && (
+                              <span className="ml-2 px-2 py-0.5 bg-slate-100 rounded text-xs">
+                                {item.feedback_report.interview_type}
+                              </span>
+                            )}
                           </div>
                         </div>
+                      </div>
 
-                        <div className="flex items-center gap-4">
-                          <span
-                            className={`text-sm font-medium px-3 py-1 rounded-full ${
-                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
-                                ? "bg-green-50 text-green-700"
-                                : "bg-orange-50 text-orange-700"
-                            }`}
-                          >
-                            {item.feedback_report?.verdict || "Incomplete"}
-                          </span>
-                          <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-orange-500 transition-colors" />
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                      <div className="flex items-center gap-4">
+                        <span
+                          className={`text-sm font-medium px-3 py-1 rounded-full ${
+                            item.feedback_report?.verdict
+                              ?.toLowerCase()
+                              .includes("hire")
+                              ? "bg-green-50 text-green-700"
+                              : "bg-orange-50 text-orange-700"
+                          }`}
+                        >
+                          {item.feedback_report?.verdict || "Incomplete"}
+                        </span>
+                        <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-orange-500 transition-colors" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -617,7 +676,8 @@ function VoiceInterviewContent() {
                     Overall Score
                   </span>
                   <span className="text-4xl font-bold text-slate-900">
-                    {feedback.score}<span className="text-lg text-slate-400">/100</span>
+                    {feedback.score}
+                    <span className="text-lg text-slate-400">/100</span>
                   </span>
                 </div>
                 <div className="p-5 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
@@ -645,10 +705,15 @@ function VoiceInterviewContent() {
 
               {feedback.strengths && feedback.strengths.length > 0 && (
                 <div className="mb-6">
-                  <h3 className="font-semibold text-green-700 mb-3">✓ Strengths</h3>
+                  <h3 className="font-semibold text-green-700 mb-3">
+                    ✓ Strengths
+                  </h3>
                   <ul className="space-y-2">
                     {feedback.strengths.map((s, i) => (
-                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                      <li
+                        key={i}
+                        className="text-slate-600 flex items-start gap-2"
+                      >
                         <span className="text-green-500 mt-1">•</span> {s}
                       </li>
                     ))}
@@ -658,10 +723,15 @@ function VoiceInterviewContent() {
 
               {feedback.improvements && feedback.improvements.length > 0 && (
                 <div className="mb-8">
-                  <h3 className="font-semibold text-orange-700 mb-3">↑ Areas to Improve</h3>
+                  <h3 className="font-semibold text-orange-700 mb-3">
+                    ↑ Areas to Improve
+                  </h3>
                   <ul className="space-y-2">
                     {feedback.improvements.map((s, i) => (
-                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                      <li
+                        key={i}
+                        className="text-slate-600 flex items-start gap-2"
+                      >
                         <span className="text-orange-500 mt-1">•</span> {s}
                       </li>
                     ))}
@@ -677,7 +747,10 @@ function VoiceInterviewContent() {
                   setCurrentTurn(0);
                 }}
                 className="w-full py-4 rounded-xl text-white font-medium transition-all hover:opacity-90 shadow-lg"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 Start New Interview
               </button>
@@ -689,24 +762,31 @@ function VoiceInterviewContent() {
         {isConnected && !feedback && (
           <div className="space-y-6">
             {/* PROMINENT Audio State Indicator */}
-            <div className={`p-6 rounded-2xl border-2 ${audioStateDisplay.bgColor} border-current shadow-lg`}
-                 style={{ borderColor: audioStateDisplay.color }}>
+            <div
+              className={`p-6 rounded-2xl border-2 ${audioStateDisplay.bgColor} border-current shadow-lg`}
+              style={{ borderColor: audioStateDisplay.color }}
+            >
               <div className="flex items-center justify-center gap-4">
-                <div 
+                <div
                   className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg"
                   style={{ backgroundColor: audioStateDisplay.color }}
                 >
                   <AudioStateIcon
-                    className={`w-8 h-8 text-white ${audioStateDisplay.animate ? "animate-pulse" : ""}`}
+                    className={`w-8 h-8 text-white ${
+                      audioStateDisplay.animate ? "animate-pulse" : ""
+                    }`}
                   />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold" style={{ color: audioStateDisplay.color }}>
+                  <p
+                    className="text-2xl font-bold"
+                    style={{ color: audioStateDisplay.color }}
+                  >
                     {audioStateDisplay.text}
                   </p>
                   <p className="text-sm text-slate-500">
-                    {audioState === "listening" 
-                      ? "Microphone is active - speak clearly" 
+                    {audioState === "listening"
+                      ? "Microphone is active - speak clearly"
                       : audioState === "thinking"
                       ? "Please wait..."
                       : audioState === "speaking"
@@ -734,7 +814,9 @@ function VoiceInterviewContent() {
                 {transcript.map((entry) => (
                   <div
                     key={entry.id}
-                    className={`flex gap-3 ${entry.role === "user" ? "flex-row-reverse" : ""}`}
+                    className={`flex gap-3 ${
+                      entry.role === "user" ? "flex-row-reverse" : ""
+                    }`}
                   >
                     <div
                       className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm"
@@ -778,7 +860,10 @@ function VoiceInterviewContent() {
                       key={i}
                       className="w-1.5 rounded-full transition-all duration-75"
                       style={{
-                        height: `${Math.max(4, audioLevel * 40 * (Math.sin(i * 0.5) + 1))}px`,
+                        height: `${Math.max(
+                          4,
+                          audioLevel * 40 * (Math.sin(i * 0.5) + 1)
+                        )}px`,
                         background: "linear-gradient(to top, #10B981, #34D399)",
                       }}
                     />
@@ -803,7 +888,13 @@ function VoiceInterviewContent() {
                 {isMuted ? (
                   <MicOff className="w-7 h-7 text-red-600" />
                 ) : (
-                  <Mic className={`w-7 h-7 ${audioState === "listening" ? "text-green-600" : "text-slate-400"}`} />
+                  <Mic
+                    className={`w-7 h-7 ${
+                      audioState === "listening"
+                        ? "text-green-600"
+                        : "text-slate-400"
+                    }`}
+                  />
                 )}
               </button>
 

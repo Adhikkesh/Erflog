@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "@/lib/SessionContext";
+import { useAuth } from "@/lib/AuthContext";
 import {
   Send,
   Loader2,
@@ -21,7 +22,14 @@ const WS_URL =
   "ws://localhost:8000";
 
 type InterviewType = "TECHNICAL" | "HR";
-type InterviewStage = "intro" | "resume" | "behavioral" | "experience" | "challenge" | "conclusion" | "end";
+type InterviewStage =
+  | "intro"
+  | "resume"
+  | "behavioral"
+  | "experience"
+  | "challenge"
+  | "conclusion"
+  | "end";
 
 interface Message {
   id: string;
@@ -36,6 +44,7 @@ interface Feedback {
   summary?: string;
   strengths?: string[];
   improvements?: string[];
+  interview_type?: string;
 }
 
 interface InterviewHistoryItem {
@@ -52,8 +61,13 @@ function TextInterviewContent() {
   const searchParams = useSearchParams();
   const jobId = searchParams.get("jobId") || "1";
   const { session, accessToken, profile } = useSession();
+  const { userMetadata } = useAuth();
 
-  const [interviewType, setInterviewType] = useState<InterviewType>("TECHNICAL");
+  // Get user ID from auth context
+  const userId = userMetadata.userId;
+
+  const [interviewType, setInterviewType] =
+    useState<InterviewType>("TECHNICAL");
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -82,14 +96,16 @@ function TextInterviewContent() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Fetch history - using hardcoded user_id for now
-  const HARDCODED_USER_ID = "d5040da0-aca7-4ba7-a96b-80e4c9ee1c44";
-  
+  // Fetch history using auth user ID
   useEffect(() => {
+    if (!userId) return;
+
     const fetchHistory = async () => {
       try {
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/interviews/${HARDCODED_USER_ID}`
+          `${
+            process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+          }/api/interviews/${userId}`
         );
         if (response.ok) {
           const data = await response.json();
@@ -102,7 +118,7 @@ function TextInterviewContent() {
       }
     };
     fetchHistory();
-  }, [feedback]);
+  }, [feedback, userId]);
 
   // Handle WebSocket messages
   const handleMessage = useCallback((event: MessageEvent) => {
@@ -158,6 +174,7 @@ function TextInterviewContent() {
         JSON.stringify({
           access_token: accessToken,
           interview_type: interviewType,
+          user_id: userId,
         })
       );
 
@@ -238,12 +255,27 @@ function TextInterviewContent() {
 
   // Stage display info
   const getStageInfo = (stage: InterviewStage) => {
-    const stages: Record<InterviewStage, { label: string; color: string; progress: number }> = {
+    const stages: Record<
+      InterviewStage,
+      { label: string; color: string; progress: number }
+    > = {
       intro: { label: "Introduction", color: "#10B981", progress: 20 },
       resume: { label: "Resume Deep-Dive", color: "#3B82F6", progress: 40 },
-      behavioral: { label: "Behavioral Questions", color: "#8B5CF6", progress: 40 },
-      experience: { label: "Experience & Motivation", color: "#F59E0B", progress: 60 },
-      challenge: { label: "Technical Challenge", color: "#EF4444", progress: 70 },
+      behavioral: {
+        label: "Behavioral Questions",
+        color: "#8B5CF6",
+        progress: 40,
+      },
+      experience: {
+        label: "Experience & Motivation",
+        color: "#F59E0B",
+        progress: 60,
+      },
+      challenge: {
+        label: "Technical Challenge",
+        color: "#EF4444",
+        progress: 70,
+      },
       conclusion: { label: "Wrapping Up", color: "#D95D39", progress: 90 },
       end: { label: "Complete ✓", color: "#6B7280", progress: 100 },
     };
@@ -261,7 +293,10 @@ function TextInterviewContent() {
             <div className="flex items-center gap-3">
               <div
                 className="w-12 h-12 rounded-xl flex items-center justify-center shadow-lg"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 <Bot className="w-6 h-6 text-white" />
               </div>
@@ -308,7 +343,8 @@ function TextInterviewContent() {
                 className="h-full transition-all duration-500 ease-out rounded-full"
                 style={{
                   width: `${getStageProgress()}%`,
-                  background: "linear-gradient(90deg, #10B981, #3B82F6, #8B5CF6, #D95D39)",
+                  background:
+                    "linear-gradient(90deg, #10B981, #3B82F6, #8B5CF6, #D95D39)",
                 }}
               />
             </div>
@@ -365,7 +401,9 @@ function TextInterviewContent() {
 
             <div
               className="w-28 h-28 rounded-full flex items-center justify-center mb-6 shadow-xl"
-              style={{ background: "linear-gradient(135deg, #FFF7ED 0%, #FED7AA 100%)" }}
+              style={{
+                background: "linear-gradient(135deg, #FFF7ED 0%, #FED7AA 100%)",
+              }}
             >
               <Bot className="w-14 h-14" style={{ color: "#D95D39" }} />
             </div>
@@ -380,11 +418,16 @@ function TextInterviewContent() {
 
             {!session ? (
               <div className="text-center">
-                <p className="text-slate-500 mb-4">Please login to start an interview</p>
+                <p className="text-slate-500 mb-4">
+                  Please login to start an interview
+                </p>
                 <a
                   href="/login"
                   className="px-8 py-4 rounded-xl text-white font-medium flex items-center gap-3 transition-all hover:scale-105 shadow-lg"
-                  style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                  style={{
+                    background:
+                      "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                  }}
                 >
                   Login to Continue
                 </a>
@@ -393,7 +436,10 @@ function TextInterviewContent() {
               <button
                 onClick={startInterview}
                 className="px-8 py-4 rounded-xl text-white font-medium flex items-center gap-3 transition-all hover:scale-105 shadow-lg hover:shadow-xl"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 <Bot className="w-5 h-5" />
                 Start {interviewType} Interview
@@ -427,7 +473,9 @@ function TextInterviewContent() {
                         <div className="flex items-center gap-4">
                           <div
                             className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 font-bold ${
-                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
+                              item.feedback_report?.verdict
+                                ?.toLowerCase()
+                                .includes("hire")
                                 ? "bg-green-100 text-green-600"
                                 : "bg-orange-100 text-orange-600"
                             }`}
@@ -436,18 +484,24 @@ function TextInterviewContent() {
                           </div>
                           <div>
                             <div className="font-medium text-slate-900">
-                              {new Date(item.created_at).toLocaleDateString(undefined, {
-                                month: "short",
-                                day: "numeric",
-                                year: "numeric",
-                              })}
+                              {new Date(item.created_at).toLocaleDateString(
+                                undefined,
+                                {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                }
+                              )}
                             </div>
                             <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
                               <Clock className="w-3 h-3" />
-                              {new Date(item.created_at).toLocaleTimeString(undefined, {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
+                              {new Date(item.created_at).toLocaleTimeString(
+                                undefined,
+                                {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                }
+                              )}
                             </div>
                           </div>
                         </div>
@@ -455,7 +509,9 @@ function TextInterviewContent() {
                         <div className="flex items-center gap-4">
                           <span
                             className={`text-sm font-medium px-3 py-1 rounded-full ${
-                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
+                              item.feedback_report?.verdict
+                                ?.toLowerCase()
+                                .includes("hire")
                                 ? "bg-green-50 text-green-700"
                                 : "bg-orange-50 text-orange-700"
                             }`}
@@ -506,7 +562,8 @@ function TextInterviewContent() {
                     Overall Score
                   </span>
                   <span className="text-4xl font-bold text-slate-900">
-                    {feedback.score}<span className="text-lg text-slate-400">/100</span>
+                    {feedback.score}
+                    <span className="text-lg text-slate-400">/100</span>
                   </span>
                 </div>
                 <div className="p-5 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
@@ -534,10 +591,15 @@ function TextInterviewContent() {
 
               {feedback.strengths && feedback.strengths.length > 0 && (
                 <div className="mb-6">
-                  <h3 className="font-semibold text-green-700 mb-3">✓ Strengths</h3>
+                  <h3 className="font-semibold text-green-700 mb-3">
+                    ✓ Strengths
+                  </h3>
                   <ul className="space-y-2">
                     {feedback.strengths.map((s, i) => (
-                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                      <li
+                        key={i}
+                        className="text-slate-600 flex items-start gap-2"
+                      >
                         <span className="text-green-500 mt-1">•</span> {s}
                       </li>
                     ))}
@@ -547,10 +609,15 @@ function TextInterviewContent() {
 
               {feedback.improvements && feedback.improvements.length > 0 && (
                 <div className="mb-8">
-                  <h3 className="font-semibold text-orange-700 mb-3">↑ Areas to Improve</h3>
+                  <h3 className="font-semibold text-orange-700 mb-3">
+                    ↑ Areas to Improve
+                  </h3>
                   <ul className="space-y-2">
                     {feedback.improvements.map((s, i) => (
-                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                      <li
+                        key={i}
+                        className="text-slate-600 flex items-start gap-2"
+                      >
                         <span className="text-orange-500 mt-1">•</span> {s}
                       </li>
                     ))}
@@ -566,7 +633,10 @@ function TextInterviewContent() {
                   setCurrentTurn(0);
                 }}
                 className="w-full py-4 rounded-xl text-white font-medium transition-all hover:opacity-90 shadow-lg"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 Start New Interview
               </button>
@@ -593,7 +663,9 @@ function TextInterviewContent() {
                 {messages.map((msg) => (
                   <div
                     key={msg.id}
-                    className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
+                    className={`flex gap-3 ${
+                      msg.role === "user" ? "flex-row-reverse" : ""
+                    }`}
                   >
                     <div
                       className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm"
@@ -617,7 +689,9 @@ function TextInterviewContent() {
                           : "bg-slate-50 text-slate-900"
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                      <p className="text-sm whitespace-pre-wrap">
+                        {msg.content}
+                      </p>
                       <p className="text-xs text-slate-400 mt-2">
                         {msg.timestamp.toLocaleTimeString()}
                       </p>
@@ -630,14 +704,18 @@ function TextInterviewContent() {
                   <div className="flex gap-3">
                     <div
                       className="w-8 h-8 rounded-full flex items-center justify-center shadow-sm"
-                      style={{ background: "linear-gradient(135deg, #D95D39, #F97316)" }}
+                      style={{
+                        background: "linear-gradient(135deg, #D95D39, #F97316)",
+                      }}
                     >
                       <Bot className="w-4 h-4 text-white" />
                     </div>
                     <div className="bg-slate-50 p-4 rounded-2xl">
                       <div className="flex items-center gap-2">
                         <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
-                        <span className="text-sm text-slate-500">Thinking...</span>
+                        <span className="text-sm text-slate-500">
+                          Thinking...
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -657,7 +735,9 @@ function TextInterviewContent() {
                   {feedback.score !== undefined && (
                     <div>
                       <span className="text-green-700">Score:</span>{" "}
-                      <span className="font-bold text-lg">{feedback.score}/100</span>
+                      <span className="font-bold text-lg">
+                        {feedback.score}/100
+                      </span>
                     </div>
                   )}
                   {feedback.verdict && (
@@ -668,7 +748,9 @@ function TextInterviewContent() {
                   )}
                   {feedback.summary && (
                     <div className="col-span-2 mt-2 p-3 bg-white rounded-lg">
-                      <span className="text-green-700 font-medium">Summary:</span>{" "}
+                      <span className="text-green-700 font-medium">
+                        Summary:
+                      </span>{" "}
                       <span className="text-slate-700">{feedback.summary}</span>
                     </div>
                   )}
@@ -689,9 +771,14 @@ function TextInterviewContent() {
               />
               <button
                 onClick={sendMessage}
-                disabled={!inputMessage.trim() || isThinking || currentStage === "end"}
+                disabled={
+                  !inputMessage.trim() || isThinking || currentStage === "end"
+                }
                 className="px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg"
-                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
+                style={{
+                  background:
+                    "linear-gradient(135deg, #D95D39 0%, #F97316 100%)",
+                }}
               >
                 <Send className="w-4 h-4" />
                 Send
