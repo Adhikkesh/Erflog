@@ -258,13 +258,31 @@ export default function Dashboard() {
   // GitHub Sync State (Single button, no auto-polling)
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
-    insights?: { message: string; repos_active?: string[]; tech_stack?: string[] };
+    insights?: { message?: string; repos_active?: string[]; tech_stack?: string[] };
     newSkills?: string[];
     updatedSkills?: string[];
     fromCache?: boolean;
   } | null>(null);
   const [processMode, setProcessMode] = useState<'onboarding' | 'sync'>('onboarding');
   const hasStartedSimulation = useRef(false);
+
+  // Cold Start State - for new users after onboarding
+  const [isColdStarting, setIsColdStarting] = useState(false);
+  const [coldStartStep, setColdStartStep] = useState(0);
+  const [coldStartElapsed, setColdStartElapsed] = useState(0);
+  const coldStartMessages = [
+    { agent: "Orchestrator", message: "🚀 Welcome aboard! Initializing your career intelligence...", icon: "🤖" },
+    { agent: "Agent 1 (Perception)", message: "Analyzing your profile and skills matrix...", icon: "🔍" },
+    { agent: "Agent 1", message: "Building semantic embeddings (768 dimensions)...", icon: "⚡" },
+    { agent: "Agent 2 (Market Sentinel)", message: "Scanning 100,000+ job listings worldwide...", icon: "🌐" },
+    { agent: "Agent 2", message: "Querying job markets with your skill vector...", icon: "📊" },
+    { agent: "Agent 2", message: "Fetching hackathons and competitions...", icon: "🏆" },
+    { agent: "Agent 3 (Strategist)", message: "Running Gap Analysis Algorithm...", icon: "🎯" },
+    { agent: "Agent 3", message: "Calculating match scores and skill gaps...", icon: "📈" },
+    { agent: "Agent 3", message: "Generating personalized learning roadmaps...", icon: "🗺️" },
+    { agent: "Agent 3", message: "Curating industry news for you...", icon: "📰" },
+    { agent: "System", message: "✨ Your personalized dashboard is ready!", icon: "🎉" },
+  ];
 
   // Mock function for runStrategy (Replace with actual API call)
   const runStrategy = useCallback(async (query?: string, force?: boolean) => {
@@ -322,11 +340,120 @@ export default function Dashboard() {
 
         // Fetch basic dashboard insights
         const data = await api.getDashboardInsights();
-        setInsights(data);
         
-        // Set profile/session for simulation
-        setProfile({ name: data.user_name || "User" });
-        setSessionId("session-" + Date.now()); // Mock session
+        // Check if user just completed onboarding but cold start hasn't finished
+        // (no jobs means today_data is empty)
+        const hasJobs = data.top_jobs && data.top_jobs.length > 0;
+        const isNewUser = data.profile_strength > 0;
+        
+        if (!hasJobs && isNewUser) {
+          console.log("[Dashboard] New user detected, running cold start with polling...");
+          setIsColdStarting(true);
+          setProfile({ name: data.user_name || "User" });
+          
+          // Trigger cold start (don't wait for it - it runs in background)
+          api.triggerColdStart().then(() => {
+            console.log("[Dashboard] Cold start API call completed");
+          }).catch(err => {
+            console.error("[Dashboard] Cold start API error:", err);
+          });
+          
+          // Start animation loop
+          let animationStep = 0;
+          const animationInterval = setInterval(() => {
+            animationStep = (animationStep + 1) % (coldStartMessages.length - 1);
+            setColdStartStep(animationStep);
+          }, 2500);
+
+          // Track elapsed time
+          const startTime = Date.now();
+          const timerInterval = setInterval(() => {
+            setColdStartElapsed(Math.floor((Date.now() - startTime) / 1000));
+          }, 1000);
+          
+          // Poll for data until jobs are available
+          const maxPollingTime = 120000; // 2 minutes max
+          const pollInterval = 10000; // Poll every 10 seconds
+          
+          const pollForData = async (): Promise<boolean> => {
+            while (Date.now() - startTime < maxPollingTime) {
+              try {
+                console.log("[Dashboard] Polling for data...");
+                const pollData = await api.getDashboardInsights();
+                
+                if (pollData.top_jobs && pollData.top_jobs.length > 0) {
+                  console.log("[Dashboard] Jobs found! Cold start complete. Refreshing...");
+                  clearInterval(animationInterval);
+                  clearInterval(timerInterval);
+                  
+                  // Show final step
+                  setColdStartStep(coldStartMessages.length - 1);
+                  await new Promise(resolve => setTimeout(resolve, 1500));
+                  
+                  // Force reload to ensure fresh state
+                  window.location.reload();
+                  return true;
+                }
+                
+                // Wait before next poll
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+              } catch (pollErr) {
+                console.error("[Dashboard] Polling error:", pollErr);
+                await new Promise(resolve => setTimeout(resolve, pollInterval));
+              }
+            }
+            return false;
+          };
+          
+          const success = await pollForData();
+          
+          if (!success) {
+            console.log("[Dashboard] Polling timeout - showing dashboard anyway");
+            clearInterval(animationInterval);
+            clearInterval(timerInterval);
+            // If timeout, just set what we have (even if empty)
+            setInsights(data);
+            setIsColdStarting(false);
+          }
+        } else {
+          // Normal dashboard load - has data
+          setInsights(data);
+          setProfile({ name: data.user_name || "User" });
+        }
+        
+        const newSessionId = "session-" + Date.now();
+        setSessionId(newSessionId);
+
+        // If GitHub insights exist in cache, show them immediately
+        if (data.github_insights) {
+          console.log("[Dashboard] GitHub cache found, displaying insights...");
+          setSyncResult({
+            insights: {
+              message: data.github_insights.insight_text || "GitHub activity synced!",
+              repos_active: [data.github_insights.repo_name],
+              tech_stack: data.github_insights.detected_skills?.map((s: any) => s.skill || s) || [],
+            },
+            newSkills: data.github_insights.detected_skills?.map((s: any) => s.skill || s) || [],
+            updatedSkills: [],
+            fromCache: true,
+          });
+        } else if (data.profile_strength > 0 && !isColdStarting) {
+          // No cache but user has profile - run FULL GitHub sync (same as clicking button)
+          console.log("[Dashboard] No GitHub cache found, running full sync...");
+          try {
+            const result = await api.syncGitHubPerception();
+            if (result.status === "success" && result.insights) {
+              setSyncResult({
+                insights: result.insights,
+                newSkills: result.new_skills || [],
+                updatedSkills: result.updated_skills || [],
+                fromCache: result.from_cache || false,
+              });
+            }
+          } catch (syncErr) {
+            console.log("[Dashboard] Auto-sync skipped:", syncErr);
+          }
+        }
 
       } catch (err) {
         console.error("Failed to fetch dashboard:", err);
@@ -517,7 +644,7 @@ export default function Dashboard() {
   };
 
   // Loading state
-  if (authLoading || (isLoading && !isInitializing)) {
+  if (authLoading || (isLoading && !isInitializing && !isColdStarting)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F7F5F0]">
         <div className="text-center">
@@ -529,6 +656,151 @@ export default function Dashboard() {
             <Bot className="w-7 h-7 text-white" />
           </motion.div>
           <p className="text-gray-600">Loading your dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ========== COLD START FULL-SCREEN LOADING EXPERIENCE ==========
+  if (isColdStarting) {
+    const currentMessage = coldStartMessages[coldStartStep];
+    const progress = ((coldStartStep + 1) / coldStartMessages.length) * 100;
+    
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center overflow-hidden relative">
+        {/* Animated background particles */}
+        <div className="absolute inset-0 overflow-hidden">
+          {[...Array(30)].map((_, i) => (
+            <motion.div
+              key={i}
+              className="absolute w-2 h-2 bg-[#D95D39] rounded-full opacity-20"
+              initial={{ 
+                x: Math.random() * (typeof window !== 'undefined' ? window.innerWidth : 1920), 
+                y: Math.random() * (typeof window !== 'undefined' ? window.innerHeight : 1080) 
+              }}
+              animate={{ 
+                y: [-20, 20, -20],
+                opacity: [0.1, 0.3, 0.1],
+              }}
+              transition={{ 
+                duration: 3 + Math.random() * 2, 
+                repeat: Infinity, 
+                delay: Math.random() * 2 
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Glowing orb in background */}
+        <motion.div 
+          className="absolute w-[600px] h-[600px] bg-[#D95D39] rounded-full opacity-5 blur-3xl"
+          animate={{ scale: [1, 1.2, 1], opacity: [0.03, 0.08, 0.03] }}
+          transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+        />
+
+        <div className="relative z-10 max-w-2xl mx-auto px-8 text-center">
+          {/* Logo/Bot Animation */}
+          <motion.div
+            initial={{ scale: 0, rotate: -180 }}
+            animate={{ scale: 1, rotate: 0 }}
+            transition={{ type: "spring", duration: 0.8 }}
+            className="mb-8"
+          >
+            <motion.div 
+              className="w-24 h-24 bg-gradient-to-br from-[#D95D39] to-[#ff7654] rounded-3xl flex items-center justify-center mx-auto shadow-2xl shadow-[#D95D39]/30"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
+            >
+              <Bot className="w-12 h-12 text-white" />
+            </motion.div>
+          </motion.div>
+
+          {/* Welcome Text */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.3 }}
+          >
+            <h1 className="text-4xl font-bold text-white mb-3">
+              {profile?.name ? `Welcome, ${profile.name.split(' ')[0]}!` : 'Welcome to Erflog!'}
+            </h1>
+            <p className="text-lg text-gray-400 mb-12">
+              Our AI agents are preparing your personalized career dashboard
+            </p>
+          </motion.div>
+
+          {/* Agent Animation Card */}
+          <motion.div 
+            className="bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 p-8 mb-8"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={coldStartStep}
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.3 }}
+                className="flex items-center gap-4"
+              >
+                <div className="w-16 h-16 bg-gradient-to-br from-[#D95D39]/20 to-[#ff7654]/20 rounded-2xl flex items-center justify-center flex-shrink-0 border border-[#D95D39]/30">
+                  <span className="text-3xl">{currentMessage?.icon}</span>
+                </div>
+                <div className="text-left flex-1">
+                  <div className="text-sm text-[#D95D39] font-medium mb-1">
+                    {currentMessage?.agent}
+                  </div>
+                  <div className="text-white text-lg">
+                    {currentMessage?.message}
+                  </div>
+                </div>
+                <motion.div 
+                  className="w-3 h-3 bg-[#D95D39] rounded-full"
+                  animate={{ scale: [1, 1.5, 1], opacity: [1, 0.5, 1] }}
+                  transition={{ duration: 1, repeat: Infinity }}
+                />
+              </motion.div>
+            </AnimatePresence>
+          </motion.div>
+
+          {/* Progress Bar & Timer */}
+          <div className="w-full max-w-md mx-auto">
+            <div className="h-2 bg-white/10 rounded-full overflow-hidden mb-3">
+              <motion.div 
+                className="h-full bg-gradient-to-r from-[#D95D39] to-[#ff7654] rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                transition={{ duration: 0.5, ease: "easeOut" }}
+              />
+            </div>
+            <div className="flex justify-between text-sm text-gray-500 mb-2">
+              <span>Initializing... {coldStartElapsed > 0 && `(${coldStartElapsed}s)`}</span>
+              <span>{Math.round(progress)}%</span>
+            </div>
+            
+            {/* Reassurance Message if taking long */}
+            {coldStartElapsed > 30 && (
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-xs text-orange-400 mt-2"
+              >
+                Generating detailed insights takes a moment. Thanks for your patience!
+              </motion.p>
+            )}
+          </div>
+
+          {/* Fun fact/tip */}
+          <motion.p 
+            className="text-gray-500 text-sm mt-8 italic"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 1 }}
+          >
+            💡 Tip: Our agents analyze 100,000+ jobs daily to find your perfect match
+          </motion.p>
         </div>
       </div>
     );
@@ -721,11 +993,10 @@ export default function Dashboard() {
         </AnimatePresence>
 
         {/* Top Stats Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-          <div className="lg:col-span-2">
+        <div className="grid grid-cols-1 mb-8">
+          <div className="w-full">
             <AgentStatusCard status={insights?.agent_status || "active"} />
           </div>
-          <ProfileStrengthCard strength={insights?.profile_strength || 0} />
         </div>
 
         {/* Strategy / Job Board */}
@@ -749,6 +1020,7 @@ export default function Dashboard() {
              </div>
 
              <div className="space-y-4">
+              <h3 className="text-lg font-bold text-gray-900 mb-3 ml-1">Top 3 Recommended Jobs for you</h3>
               {jobs.length > 0 ? (
                 jobs.map((job) => (
                   <JobCard 
@@ -757,9 +1029,8 @@ export default function Dashboard() {
                     companyName={job.company}
                     jobTitle={job.title}
                     matchScore={job.matchScore}
-                    // Optional: Add simple handlers or connect to your real logic
-                    onAnalyzeGap={(id) => console.log("Analyze gap for:", id)}
-                    onDeploy={(id) => console.log("Deploy:", id)}
+                    onViewRoadmap={(id: string) => console.log("View roadmap for:", id)}
+                    onApply={(id: string) => console.log("Apply to:", id)}
                   />
                 ))
               ) : (
