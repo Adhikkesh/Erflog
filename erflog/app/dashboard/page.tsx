@@ -204,57 +204,20 @@ function NewsCardComponent({ news, index }: { news: NewsCard; index: number }) {
         <div className="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
           <Newspaper className="w-4 h-4 text-blue-500" />
         </div>
-
-        <div className="flex flex-wrap gap-1.5 mb-4">
-          {job.skills.slice(0, 4).map((skill, i) => (
-            <span key={`${skill}-${i}`} className="px-2 py-1 rounded text-xs bg-gray-100 text-ink">{skill}</span>
-          ))}
-          {job.skills.length > 4 && (
-            <span className="px-2 py-1 rounded text-xs bg-gray-100 text-secondary">+{job.skills.length - 4}</span>
+        <div className="flex-1">
+          <h4 className="font-medium text-gray-900 mb-1">{news.title}</h4>
+          <p className="text-sm text-gray-600 line-clamp-2">{news.summary}</p>
+          {news.relevance && (
+            <span className="text-xs text-blue-500 mt-2 inline-block">
+              {news.relevance}
+            </span>
           )}
-        </div>
-
-        {hasGaps && (
-          <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
-            <div className="text-xs font-medium text-amber-700 mb-2">Skills to Develop:</div>
-            <div className="flex flex-wrap gap-1.5">
-              {job.gapSkills?.map((skill, i) => (
-                <span key={`${skill}-${i}`} className="px-2 py-1 rounded text-xs bg-amber-100 text-amber-800">{skill}</span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between text-sm text-secondary mb-4">
-          <span>{job.location}</span>
-          {job.salary && <span>{job.salary}</span>}
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div className="flex gap-2">
-            {isReady ? (
-              <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
-                <Zap className="w-4 h-4" /> Deploy Kit
-              </button>
-            ) : (
-              <>
-                <button onClick={() => router.push(`/jobs/${job.id}`)} className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg border font-medium transition-all hover:bg-gray-50" style={{ borderColor: "#E5E0D8" }}>
-                  <Target className="w-4 h-4" /> View Roadmap
-                </button>
-                <button onClick={() => router.push(`/jobs/${job.id}/apply`)} className="flex items-center justify-center px-4 py-3 rounded-lg text-white font-medium transition-all hover:opacity-90" style={{ backgroundColor: "#D95D39" }}>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              </>
-            )}
-          </div>
-          <button onClick={() => router.push(`/interview/voice?jobId=${job.id}`)} className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border font-medium transition-all hover:bg-gray-50 text-sm" style={{ borderColor: "#D95D39", color: "#D95D39" }}>
-            🎤 Mock Interview
-          </button>
         </div>
       </div>
     </motion.div>
   );
 }
+
 
 // Watchdog check function
 async function checkWatchdog(sessionId: string, lastSha?: string) {
@@ -393,7 +356,7 @@ export default function Dashboard() {
 
       if (processMode === 'onboarding') {
         setAgentLogs((prev) => [...prev, {
-          id: `final-${Date.now()}`,
+          id: crypto.randomUUID(),
           agent: "System",
           message: success ? "✓ Strategy Board Ready - Found matching opportunities!" : "✓ Loaded from cache",
           type: "success",
@@ -416,7 +379,7 @@ export default function Dashboard() {
         if (stepIndex < SIMULATION_STEPS.length) {
           const step = SIMULATION_STEPS[stepIndex];
           setAgentLogs((logs) => [...logs, {
-            id: `step-${Date.now()}-${Math.random()}`,
+            id: crypto.randomUUID(),
             agent: step.agent,
             message: step.message,
             type: step.type,
@@ -431,9 +394,9 @@ export default function Dashboard() {
       hasStartedSimulation.current = true;
       const firstStep = SIMULATION_STEPS[0];
       setAgentLogs(prev => {
-        if (prev.some(log => log.id === "step-init")) return prev;
-        return [...prev, {
-          id: "step-init",
+        if (prev.length > 0) return prev; // Already initialized
+        return [{
+          id: crypto.randomUUID(),
           agent: firstStep.agent,
           message: firstStep.message,
           type: firstStep.type,
@@ -467,7 +430,7 @@ export default function Dashboard() {
         // Show success log with cache indicator
         const cacheIndicator = result.from_cache ? " (from cache)" : " (fresh analysis)";
         setAgentLogs(prev => [...prev, {
-          id: `sync-success-${Date.now()}`,
+          id: crypto.randomUUID(),
           agent: "GitHub Watchdog",
           message: `✓ ${result.insights?.message || "GitHub synced!"}${cacheIndicator}`,
           type: "success",
@@ -533,7 +496,7 @@ export default function Dashboard() {
     hasStartedSimulation.current = false;
 
     setAgentLogs([{
-      id: `refresh-start-${Date.now()}`,
+      id: crypto.randomUUID(),
       agent: "System",
       message: "Force refresh initiated...",
       type: "agent",
@@ -545,7 +508,7 @@ export default function Dashboard() {
     setApiComplete(true);
 
     setAgentLogs((prev) => [...prev, {
-      id: `refresh-complete-${Date.now()}`,
+      id: crypto.randomUUID(),
       agent: "System",
       message: success ? "✓ Refreshed!" : "✓ Done",
       type: "success",
