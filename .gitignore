@@ -44,4 +44,10 @@ env/
 # Node (if frontend exists)
 node_modules/
 .next/
-out/backend/credential.json
+out/
+
+# Credentials (NEVER commit these!)
+backend/credential.json
+credential.json
+*.json.credentials
+
