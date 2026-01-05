@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { supabase } from "@/lib/supabase";
+import { useSession } from "@/lib/SessionContext";
 import {
   Mic,
   MicOff,
@@ -14,17 +14,18 @@ import {
   User,
   AlertCircle,
   Clock,
-  Calendar,
   ChevronRight,
+  Briefcase,
+  GraduationCap,
 } from "lucide-react";
 
-// User ID (hardcoded for now, could be from session)
-const USER_ID = "9f3eef8e-635b-46cc-a088-affae97c9a2b";
 const WS_URL =
   process.env.NEXT_PUBLIC_API_URL?.replace("http", "ws") ||
   "ws://localhost:8000";
 
-type InterviewStage = "intro" | "resume" | "challenge" | "conclusion" | "end";
+type InterviewType = "TECHNICAL" | "HR";
+type AudioState = "idle" | "thinking" | "speaking" | "listening";
+type InterviewStage = "intro" | "resume" | "behavioral" | "experience" | "challenge" | "conclusion" | "end";
 
 interface TranscriptEntry {
   id: string;
@@ -37,22 +38,29 @@ interface Feedback {
   score?: number;
   verdict?: string;
   summary?: string;
+  strengths?: string[];
+  improvements?: string[];
 }
 
 interface InterviewHistoryItem {
   id: number;
   created_at: string;
   feedback_report: Feedback;
+  interview_type?: string;
 }
 
-export default function VoiceInterviewPage() {
+const TECHNICAL_STAGES = ["intro", "resume", "challenge", "conclusion"];
+const HR_STAGES = ["intro", "behavioral", "experience", "conclusion"];
+
+function VoiceInterviewContent() {
   const searchParams = useSearchParams();
-  const jobId = searchParams.get('jobId') || '1'; // Default to '1' if not provided
-  
+  const jobId = searchParams.get("jobId") || "1";
+  const { session, accessToken, profile } = useSession();
+
+  const [interviewType, setInterviewType] = useState<InterviewType>("TECHNICAL");
   const [isConnected, setIsConnected] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isThinking, setIsThinking] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [audioState, setAudioState] = useState<AudioState>("idle");
   const [currentStage, setCurrentStage] = useState<InterviewStage>("intro");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -60,51 +68,65 @@ export default function VoiceInterviewPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [history, setHistory] = useState<InterviewHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [jobTitle, setJobTitle] = useState<string>("");
+  const [currentTurn, setCurrentTurn] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
   const audioQueueRef = useRef<Blob[]>([]);
   const isPlayingRef = useRef(false);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const audioStateRef = useRef<AudioState>("idle");
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    audioStateRef.current = audioState;
+    console.log(`[Frontend] Audio State Changed: ${audioState}`);
+  }, [audioState]);
+
+  // Get stage progress
+  const getStageProgress = () => {
+    const stages = interviewType === "TECHNICAL" ? TECHNICAL_STAGES : HR_STAGES;
+    const currentIdx = stages.indexOf(currentStage);
+    return ((currentIdx + 1) / stages.length) * 100;
+  };
 
   // Auto-scroll transcript
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
 
-  // Fetch history
+  // Fetch history - using hardcoded user_id for now
+  const HARDCODED_USER_ID = "d5040da0-aca7-4ba7-a96b-80e4c9ee1c44";
+  
   useEffect(() => {
     const fetchHistory = async () => {
       try {
-        // Use backend API instead of direct Supabase call to bypass RLS
         const response = await fetch(
-          `${
-            process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-          }/api/interviews/${USER_ID}`
+          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/interviews/${HARDCODED_USER_ID}`
         );
-        if (!response.ok) throw new Error("Failed to fetch history");
-
-        const data = await response.json();
-        setHistory(data || []);
+        if (response.ok) {
+          const data = await response.json();
+          setHistory(data || []);
+        }
       } catch (e) {
         console.error("Error fetching history:", e);
       } finally {
         setIsLoadingHistory(false);
       }
     };
-
     fetchHistory();
-  }, [feedback]); // Refresh when new feedback is added
+  }, [feedback]);
 
-  // Play audio from queue
+  // Play audio from queue - when audio finishes, set state to listening
   const playNextAudio = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
 
     isPlayingRef.current = true;
-    setIsSpeaking(true);
+    setAudioState("speaking");
 
     const audioBlob = audioQueueRef.current.shift()!;
     const audioUrl = URL.createObjectURL(audioBlob);
@@ -113,14 +135,21 @@ export default function VoiceInterviewPage() {
     audio.onended = () => {
       URL.revokeObjectURL(audioUrl);
       isPlayingRef.current = false;
-      setIsSpeaking(false);
-      playNextAudio(); // Play next in queue
+      
+      // When audio finishes playing, check if more in queue
+      if (audioQueueRef.current.length > 0) {
+        playNextAudio();
+      } else {
+        // No more audio, switch to listening
+        console.log("[Frontend] Audio finished, switching to LISTENING");
+        setAudioState("listening");
+      }
     };
 
     audio.onerror = () => {
       URL.revokeObjectURL(audioUrl);
       isPlayingRef.current = false;
-      setIsSpeaking(false);
+      setAudioState("listening");
       playNextAudio();
     };
 
@@ -129,7 +158,7 @@ export default function VoiceInterviewPage() {
     } catch (e) {
       console.error("Audio play error:", e);
       isPlayingRef.current = false;
-      setIsSpeaking(false);
+      setAudioState("listening");
     }
   }, []);
 
@@ -137,52 +166,51 @@ export default function VoiceInterviewPage() {
   const handleMessage = useCallback(
     async (event: MessageEvent) => {
       if (event.data instanceof Blob) {
-        // Audio data from TTS
+        // Audio data received - add to queue and play
+        console.log("[Frontend] Received audio blob");
         audioQueueRef.current.push(event.data);
         playNextAudio();
 
-        // Add assistant message placeholder (actual text comes from thinking status)
         setTranscript((prev) => {
           const last = prev[prev.length - 1];
-          if (last?.role === "assistant" && last.text === "...") {
-            return prev; // Already has placeholder
+          if (last?.role === "assistant" && last.text === "AI is speaking...") {
+            return prev;
           }
           return [
             ...prev,
             {
               id: `assistant-${Date.now()}`,
               role: "assistant",
-              text: "Speaking...",
+              text: "AI is speaking...",
               timestamp: new Date(),
             },
           ];
         });
       } else {
-        // JSON event
         try {
           const data = JSON.parse(event.data);
+          console.log("[Frontend] Received message:", data);
 
-          if (data.type === "event") {
-            if (data.event === "thinking") {
-              setIsThinking(data.status === "start");
+          if (data.type === "config") {
+            setJobTitle(data.job_title || "");
+          } else if (data.type === "event") {
+            if (data.event === "audio_state") {
+              // Backend telling us what state to be in
+              console.log(`[Frontend] Backend audio_state: ${data.state}`);
+              setAudioState(data.state);
+            } else if (data.event === "thinking") {
+              if (data.status === "start") {
+                setAudioState("thinking");
+              }
+              // Don't set to listening here, wait for audio to finish
             } else if (data.event === "stage_change") {
               setCurrentStage(data.stage as InterviewStage);
-
-              if (data.stage === "end" || data.stage === "save_and_end") {
-                // Interview complete
-                setTranscript((prev) => [
-                  ...prev,
-                  {
-                    id: `system-${Date.now()}`,
-                    role: "assistant",
-                    text: "Interview completed. Thank you!",
-                    timestamp: new Date(),
-                  },
-                ]);
-              }
+              setCurrentTurn((prev) => prev + 1);
             }
           } else if (data.type === "feedback") {
             setFeedback(data.data);
+          } else if (data.type === "error") {
+            setError(data.message);
           }
         } catch (e) {
           console.error("Failed to parse WebSocket message:", e);
@@ -196,9 +224,10 @@ export default function VoiceInterviewPage() {
   const startInterview = useCallback(async () => {
     setError(null);
     setTranscript([]);
+    setCurrentTurn(0);
+    setAudioState("thinking"); // Start in thinking state
 
     try {
-      // Request microphone permission
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
@@ -209,39 +238,45 @@ export default function VoiceInterviewPage() {
       });
       streamRef.current = stream;
 
-      // Setup audio context for processing raw PCM
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
 
-      // Create analyser for level visualization
       analyserRef.current = audioContext.createAnalyser();
       analyserRef.current.fftSize = 256;
 
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(analyserRef.current);
 
-      // Create ScriptProcessor to capture raw PCM audio
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       source.connect(processor);
       processor.connect(audioContext.destination);
+      processorRef.current = processor;
 
-      // Store processor reference for cleanup
-      (audioContextRef.current as any).processor = processor;
-
-      // Connect WebSocket with dynamic job_id
       const ws = new WebSocket(`${WS_URL}/ws/interview/${jobId}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("WebSocket connected");
-        setIsConnected(true);
-        setIsRecording(true);
+        console.log("[Frontend] WebSocket connected");
+        
+        // Send auth and config first
+        ws.send(
+          JSON.stringify({
+            access_token: accessToken || "test",
+            interview_type: interviewType,
+          })
+        );
 
-        // Start sending audio when processor receives data
+        setIsConnected(true);
+
+        // CRITICAL: Only send audio when in LISTENING state
         processor.onaudioprocess = (e) => {
-          if (ws.readyState === WebSocket.OPEN) {
+          // Only send audio if we're in listening state and not muted
+          if (
+            ws.readyState === WebSocket.OPEN && 
+            audioStateRef.current === "listening" && 
+            !isMuted
+          ) {
             const inputData = e.inputBuffer.getChannelData(0);
-            // Convert Float32 to Int16 PCM
             const pcmData = new Int16Array(inputData.length);
             for (let i = 0; i < inputData.length; i++) {
               const s = Math.max(-1, Math.min(1, inputData[i]));
@@ -251,7 +286,6 @@ export default function VoiceInterviewPage() {
           }
         };
 
-        // Start audio level monitoring
         monitorAudioLevel();
       };
 
@@ -265,15 +299,15 @@ export default function VoiceInterviewPage() {
       ws.onclose = () => {
         console.log("WebSocket closed");
         setIsConnected(false);
-        setIsRecording(false);
+        setAudioState("idle");
       };
     } catch (e) {
       console.error("Failed to start interview:", e);
       setError("Failed to access microphone. Please grant permission.");
     }
-  }, [handleMessage]);
+  }, [handleMessage, accessToken, interviewType, jobId, isMuted]);
 
-  // Monitor audio level for visualization
+  // Monitor audio level
   const monitorAudioLevel = useCallback(() => {
     if (!analyserRef.current) return;
 
@@ -294,15 +328,8 @@ export default function VoiceInterviewPage() {
     updateLevel();
   }, [isConnected]);
 
-  // Stop recording
-  const stopRecording = useCallback(() => {
-    setIsRecording(false);
-  }, []);
-
   // End interview
   const endInterview = useCallback(() => {
-    stopRecording();
-
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -319,7 +346,8 @@ export default function VoiceInterviewPage() {
     }
 
     setIsConnected(false);
-  }, [stopRecording]);
+    setAudioState("idle");
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -330,13 +358,7 @@ export default function VoiceInterviewPage() {
 
   // Toggle mute
   const toggleMute = useCallback(() => {
-    if (streamRef.current) {
-      const audioTrack = streamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsRecording(audioTrack.enabled);
-      }
-    }
+    setIsMuted((prev) => !prev);
   }, []);
 
   // Stage display info
@@ -344,7 +366,9 @@ export default function VoiceInterviewPage() {
     const stages: Record<InterviewStage, { label: string; color: string }> = {
       intro: { label: "Introduction", color: "#10B981" },
       resume: { label: "Resume Deep-Dive", color: "#3B82F6" },
-      challenge: { label: "Challenging Questions", color: "#8B5CF6" },
+      behavioral: { label: "Behavioral Questions", color: "#8B5CF6" },
+      experience: { label: "Experience & Motivation", color: "#F59E0B" },
+      challenge: { label: "Technical Challenge", color: "#EF4444" },
       conclusion: { label: "Conclusion", color: "#D95D39" },
       end: { label: "Complete", color: "#6B7280" },
     };
@@ -353,37 +377,74 @@ export default function VoiceInterviewPage() {
 
   const stageInfo = getStageInfo(currentStage);
 
+  // Audio state display
+  const getAudioStateDisplay = () => {
+    switch (audioState) {
+      case "thinking":
+        return { icon: Loader2, text: "AI is thinking...", color: "#F59E0B", animate: true, bgColor: "bg-yellow-50" };
+      case "speaking":
+        return { icon: Volume2, text: "AI is speaking...", color: "#D95D39", animate: true, bgColor: "bg-orange-50" };
+      case "listening":
+        return { icon: Mic, text: "Your turn - speak now!", color: "#10B981", animate: false, bgColor: "bg-green-50" };
+      default:
+        return { icon: Mic, text: "Ready", color: "#6B7280", animate: false, bgColor: "bg-slate-50" };
+    }
+  };
+
+  const audioStateDisplay = getAudioStateDisplay();
+  const AudioStateIcon = audioStateDisplay.icon;
+
   return (
-    <div className="min-h-screen bg-canvas flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-orange-50 flex flex-col">
       {/* Header */}
-      <div className="bg-white border-b" style={{ borderColor: "#E5E0D8" }}>
+      <div className="bg-white/80 backdrop-blur-sm border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div
-                className="w-10 h-10 rounded-full flex items-center justify-center"
-                style={{ backgroundColor: "#D95D39" }}
+                className="w-12 h-12 rounded-xl flex items-center justify-center shadow-lg"
+                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
               >
-                <Bot className="w-5 h-5 text-white" />
+                <Bot className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h1 className="font-serif-bold text-xl text-ink">
+                <h1 className="font-bold text-xl text-slate-900">
                   Voice Interview
                 </h1>
-                <p className="text-sm text-secondary">
-                  Job ID: {jobId} | User: {USER_ID.slice(0, 8)}...
+                <p className="text-sm text-slate-500">
+                  {jobTitle ? `${jobTitle}` : `Job #${jobId}`} • {interviewType}
                 </p>
               </div>
             </div>
 
             {/* Stage Badge */}
-            <div
-              className="px-4 py-2 rounded-full text-sm font-medium text-white"
-              style={{ backgroundColor: stageInfo.color }}
-            >
-              {stageInfo.label}
+            <div className="flex items-center gap-3">
+              {isConnected && (
+                <span className="text-sm text-slate-500">
+                  Turn {currentTurn}/6
+                </span>
+              )}
+              <div
+                className="px-4 py-2 rounded-full text-sm font-medium text-white shadow-md"
+                style={{ backgroundColor: stageInfo.color }}
+              >
+                {stageInfo.label}
+              </div>
             </div>
           </div>
+
+          {/* Progress Bar */}
+          {isConnected && (
+            <div className="mt-3 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+              <div
+                className="h-full transition-all duration-500 ease-out rounded-full"
+                style={{
+                  width: `${getStageProgress()}%`,
+                  background: "linear-gradient(90deg, #10B981, #3B82F6, #8B5CF6, #D95D39)",
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -391,12 +452,12 @@ export default function VoiceInterviewPage() {
       <div className="flex-1 max-w-4xl mx-auto w-full px-6 py-8">
         {/* Error Display */}
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center gap-3">
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-center gap-3 shadow-sm">
             <AlertCircle className="w-5 h-5 text-red-500" />
-            <p className="text-red-700">{error}</p>
+            <p className="text-red-700 flex-1">{error}</p>
             <button
               onClick={() => setError(null)}
-              className="ml-auto text-red-500 hover:text-red-700"
+              className="text-red-500 hover:text-red-700 font-medium"
             >
               ✕
             </button>
@@ -405,149 +466,166 @@ export default function VoiceInterviewPage() {
 
         {/* Not Connected State */}
         {!isConnected && !feedback && (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div
-              className="w-24 h-24 rounded-full flex items-center justify-center mb-6"
-              style={{ backgroundColor: "#F0EFE9" }}
-            >
-              <Mic className="w-12 h-12" style={{ color: "#D95D39" }} />
+          <div className="flex flex-col items-center justify-center py-12">
+            {/* Interview Type Toggle */}
+            <div className="mb-8 bg-white rounded-2xl p-2 shadow-lg border border-slate-200">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setInterviewType("TECHNICAL")}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
+                    interviewType === "TECHNICAL"
+                      ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <Briefcase className="w-4 h-4" />
+                  Technical
+                </button>
+                <button
+                  onClick={() => setInterviewType("HR")}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
+                    interviewType === "HR"
+                      ? "bg-gradient-to-r from-purple-500 to-pink-600 text-white shadow-md"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                >
+                  <GraduationCap className="w-4 h-4" />
+                  HR / Behavioral
+                </button>
+              </div>
             </div>
-            <h2 className="text-2xl font-serif-bold text-ink mb-2">
+
+            <div
+              className="w-28 h-28 rounded-full flex items-center justify-center mb-6 shadow-xl"
+              style={{ background: "linear-gradient(135deg, #FFF7ED 0%, #FED7AA 100%)" }}
+            >
+              <Mic className="w-14 h-14" style={{ color: "#D95D39" }} />
+            </div>
+            
+            <h2 className="text-3xl font-bold text-slate-900 mb-3">
               Ready to Practice?
             </h2>
-            <p className="text-secondary mb-8 text-center max-w-md">
+            <p className="text-slate-600 mb-8 text-center max-w-md">
               Start a voice interview session. The AI interviewer will ask you
               questions and provide real-time feedback.
             </p>
+
             <button
               onClick={startInterview}
-              className="px-8 py-4 rounded-xl text-white font-medium flex items-center gap-3 transition-all hover:scale-105"
-              style={{ backgroundColor: "#D95D39" }}
+              className="px-8 py-4 rounded-xl text-white font-medium flex items-center gap-3 transition-all hover:scale-105 shadow-lg hover:shadow-xl"
+              style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
             >
               <Phone className="w-5 h-5" />
-              Start Interview
+              Start {interviewType} Interview
             </button>
 
             {/* History Section */}
-            <div
-              className="w-full max-w-2xl mt-16 border-t pt-8"
-              style={{ borderColor: "#E5E0D8" }}
-            >
-              <h3 className="text-lg font-serif-bold text-ink mb-6 flex items-center gap-2">
-                <Clock className="w-5 h-5 text-secondary" />
+            <div className="w-full max-w-2xl mt-16 pt-8 border-t border-slate-200">
+              <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-slate-400" />
                 Past Sessions
               </h3>
 
-              {isLoadingHistory ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="w-6 h-6 animate-spin text-secondary" />
-                </div>
-              ) : history.length === 0 ? (
-                <div className="text-center py-8 bg-gray-50 rounded-xl border border-dashed border-gray-200">
-                  <p className="text-secondary">No past interviews found.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {history.map((item) => (
-                    <button
-                      key={item.id}
-                      onClick={() => setFeedback(item.feedback_report)}
-                      className="w-full bg-white p-4 rounded-xl border hover:border-orange-300 hover:shadow-sm transition-all flex items-center justify-between group text-left"
-                      style={{ borderColor: "#E5E0D8" }}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div
-                          className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 ${
-                            item.feedback_report?.verdict
-                              ?.toLowerCase()
-                              .includes("hire")
-                              ? "bg-green-100 text-green-600"
-                              : "bg-orange-100 text-orange-600"
-                          }`}
-                        >
-                          <span className="font-bold text-sm">
+                {isLoadingHistory ? (
+                  <div className="flex justify-center py-8">
+                    <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+                  </div>
+                ) : history.length === 0 ? (
+                  <div className="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+                    <p className="text-slate-500">No past interviews found.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {history.slice(0, 5).map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => setFeedback(item.feedback_report)}
+                        className="w-full bg-white p-4 rounded-xl border border-slate-200 hover:border-orange-300 hover:shadow-md transition-all flex items-center justify-between group text-left"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div
+                            className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 font-bold ${
+                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
+                                ? "bg-green-100 text-green-600"
+                                : "bg-orange-100 text-orange-600"
+                            }`}
+                          >
                             {item.feedback_report?.score || "?"}
-                          </span>
-                        </div>
-                        <div>
-                          <div className="font-medium text-ink flex items-center gap-2">
-                            {new Date(item.created_at).toLocaleDateString(
-                              undefined,
-                              {
+                          </div>
+                          <div>
+                            <div className="font-medium text-slate-900">
+                              {new Date(item.created_at).toLocaleDateString(undefined, {
                                 month: "short",
                                 day: "numeric",
                                 year: "numeric",
-                              }
-                            )}
-                          </div>
-                          <div className="text-xs text-secondary flex items-center gap-1 mt-1">
-                            <Clock className="w-3 h-3" />
-                            {new Date(item.created_at).toLocaleTimeString(
-                              undefined,
-                              {
+                              })}
+                            </div>
+                            <div className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                              <Clock className="w-3 h-3" />
+                              {new Date(item.created_at).toLocaleTimeString(undefined, {
                                 hour: "2-digit",
                                 minute: "2-digit",
-                              }
-                            )}
+                              })}
+                              {item.interview_type && (
+                                <span className="ml-2 px-2 py-0.5 bg-slate-100 rounded text-xs">
+                                  {item.interview_type}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center gap-4">
-                        <span
-                          className={`text-sm font-medium px-3 py-1 rounded-full ${
-                            item.feedback_report?.verdict
-                              ?.toLowerCase()
-                              .includes("hire")
-                              ? "bg-green-50 text-green-700"
-                              : "bg-orange-50 text-orange-700"
-                          }`}
-                        >
-                          {item.feedback_report?.verdict || "Incomplete"}
-                        </span>
-                        <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-orange-500 transition-colors" />
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
+                        <div className="flex items-center gap-4">
+                          <span
+                            className={`text-sm font-medium px-3 py-1 rounded-full ${
+                              item.feedback_report?.verdict?.toLowerCase().includes("hire")
+                                ? "bg-green-50 text-green-700"
+                                : "bg-orange-50 text-orange-700"
+                            }`}
+                          >
+                            {item.feedback_report?.verdict || "Incomplete"}
+                          </span>
+                          <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-orange-500 transition-colors" />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
             </div>
           </div>
         )}
+
         {/* Feedback Display */}
         {feedback && (
           <div className="max-w-2xl mx-auto w-full">
-            <div
-              className="bg-white rounded-xl border p-8 shadow-sm"
-              style={{ borderColor: "#E5E0D8" }}
-            >
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-lg">
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
-                  <Bot className="w-6 h-6 text-green-600" />
+                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-green-400 to-emerald-600 flex items-center justify-center shadow-lg">
+                  <Bot className="w-7 h-7 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-2xl font-serif-bold text-ink">
+                  <h2 className="text-2xl font-bold text-slate-900">
                     Interview Feedback
                   </h2>
-                  <p className="text-secondary">Here is how you performed</p>
+                  <p className="text-slate-500">Here's how you performed</p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-6 mb-8">
-                <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
-                  <span className="text-sm text-gray-500 block mb-1">
+                <div className="p-5 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
+                  <span className="text-sm text-slate-500 block mb-1">
                     Overall Score
                   </span>
-                  <span className="text-3xl font-bold text-ink">
-                    {feedback.score}/100
+                  <span className="text-4xl font-bold text-slate-900">
+                    {feedback.score}<span className="text-lg text-slate-400">/100</span>
                   </span>
                 </div>
-                <div className="p-4 bg-gray-50 rounded-lg border border-gray-100">
-                  <span className="text-sm text-gray-500 block mb-1">
+                <div className="p-5 bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl border border-slate-200">
+                  <span className="text-sm text-slate-500 block mb-1">
                     Verdict
                   </span>
                   <span
-                    className={`text-xl font-bold ${
+                    className={`text-2xl font-bold ${
                       feedback.verdict?.toLowerCase().includes("hire")
                         ? "text-green-600"
                         : "text-orange-600"
@@ -558,43 +636,97 @@ export default function VoiceInterviewPage() {
                 </div>
               </div>
 
-              <div className="mb-8">
-                <h3 className="font-medium text-ink mb-3">Summary</h3>
-                <p className="text-gray-600 leading-relaxed bg-gray-50 p-4 rounded-lg border border-gray-100">
+              <div className="mb-6">
+                <h3 className="font-semibold text-slate-900 mb-3">Summary</h3>
+                <p className="text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-200">
                   {feedback.summary}
                 </p>
               </div>
+
+              {feedback.strengths && feedback.strengths.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="font-semibold text-green-700 mb-3">✓ Strengths</h3>
+                  <ul className="space-y-2">
+                    {feedback.strengths.map((s, i) => (
+                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                        <span className="text-green-500 mt-1">•</span> {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {feedback.improvements && feedback.improvements.length > 0 && (
+                <div className="mb-8">
+                  <h3 className="font-semibold text-orange-700 mb-3">↑ Areas to Improve</h3>
+                  <ul className="space-y-2">
+                    {feedback.improvements.map((s, i) => (
+                      <li key={i} className="text-slate-600 flex items-start gap-2">
+                        <span className="text-orange-500 mt-1">•</span> {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <button
                 onClick={() => {
                   setFeedback(null);
                   setTranscript([]);
                   setCurrentStage("intro");
+                  setCurrentTurn(0);
                 }}
-                className="w-full py-3 rounded-lg text-white font-medium transition-all hover:opacity-90"
-                style={{ backgroundColor: "#D95D39" }}
+                className="w-full py-4 rounded-xl text-white font-medium transition-all hover:opacity-90 shadow-lg"
+                style={{ background: "linear-gradient(135deg, #D95D39 0%, #F97316 100%)" }}
               >
                 Start New Interview
               </button>
             </div>
           </div>
         )}
+
         {/* Connected State */}
         {isConnected && !feedback && (
           <div className="space-y-6">
+            {/* PROMINENT Audio State Indicator */}
+            <div className={`p-6 rounded-2xl border-2 ${audioStateDisplay.bgColor} border-current shadow-lg`}
+                 style={{ borderColor: audioStateDisplay.color }}>
+              <div className="flex items-center justify-center gap-4">
+                <div 
+                  className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg"
+                  style={{ backgroundColor: audioStateDisplay.color }}
+                >
+                  <AudioStateIcon
+                    className={`w-8 h-8 text-white ${audioStateDisplay.animate ? "animate-pulse" : ""}`}
+                  />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold" style={{ color: audioStateDisplay.color }}>
+                    {audioStateDisplay.text}
+                  </p>
+                  <p className="text-sm text-slate-500">
+                    {audioState === "listening" 
+                      ? "Microphone is active - speak clearly" 
+                      : audioState === "thinking"
+                      ? "Please wait..."
+                      : audioState === "speaking"
+                      ? "Listen to the AI interviewer"
+                      : "Connecting..."}
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* Transcript */}
-            <div
-              className="bg-white rounded-xl border p-6 h-[400px] overflow-y-auto"
-              style={{ borderColor: "#E5E0D8" }}
-            >
-              <h3 className="text-sm font-medium text-secondary mb-4">
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 h-[300px] overflow-y-auto shadow-lg">
+              <h3 className="text-sm font-semibold text-slate-500 mb-4 uppercase tracking-wide">
                 Transcript
               </h3>
 
               {transcript.length === 0 && (
-                <div className="flex items-center justify-center h-full text-secondary">
+                <div className="flex items-center justify-center h-full text-slate-400">
                   <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                  Connecting to interviewer...
+                  Waiting for interviewer...
                 </div>
               )}
 
@@ -602,15 +734,15 @@ export default function VoiceInterviewPage() {
                 {transcript.map((entry) => (
                   <div
                     key={entry.id}
-                    className={`flex gap-3 ${
-                      entry.role === "user" ? "flex-row-reverse" : ""
-                    }`}
+                    className={`flex gap-3 ${entry.role === "user" ? "flex-row-reverse" : ""}`}
                   >
                     <div
-                      className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                      className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm"
                       style={{
-                        backgroundColor:
-                          entry.role === "user" ? "#3B82F6" : "#D95D39",
+                        background:
+                          entry.role === "user"
+                            ? "linear-gradient(135deg, #3B82F6, #1D4ED8)"
+                            : "linear-gradient(135deg, #D95D39, #F97316)",
                       }}
                     >
                       {entry.role === "user" ? (
@@ -620,14 +752,14 @@ export default function VoiceInterviewPage() {
                       )}
                     </div>
                     <div
-                      className={`max-w-[80%] p-3 rounded-lg ${
+                      className={`max-w-[80%] p-3 rounded-xl ${
                         entry.role === "user"
                           ? "bg-blue-50 text-blue-900"
-                          : "bg-gray-50 text-gray-900"
+                          : "bg-slate-50 text-slate-900"
                       }`}
                     >
                       <p className="text-sm">{entry.text}</p>
-                      <p className="text-xs text-gray-400 mt-1">
+                      <p className="text-xs text-slate-400 mt-1">
                         {entry.timestamp.toLocaleTimeString()}
                       </p>
                     </div>
@@ -637,87 +769,68 @@ export default function VoiceInterviewPage() {
               </div>
             </div>
 
-            {/* Status Indicators */}
-            <div className="flex items-center justify-center gap-6">
-              {/* Thinking Indicator */}
-              {isThinking && (
-                <div className="flex items-center gap-2 text-secondary">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="text-sm">AI is thinking...</span>
+            {/* Audio Level Visualization - only show when listening */}
+            {audioState === "listening" && (
+              <div className="flex items-center justify-center">
+                <div className="flex items-end gap-1 h-10">
+                  {[...Array(20)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="w-1.5 rounded-full transition-all duration-75"
+                      style={{
+                        height: `${Math.max(4, audioLevel * 40 * (Math.sin(i * 0.5) + 1))}px`,
+                        background: "linear-gradient(to top, #10B981, #34D399)",
+                      }}
+                    />
+                  ))}
                 </div>
-              )}
-
-              {/* Speaking Indicator */}
-              {isSpeaking && (
-                <div className="flex items-center gap-2 text-secondary">
-                  <Volume2
-                    className="w-5 h-5 animate-pulse"
-                    style={{ color: "#D95D39" }}
-                  />
-                  <span className="text-sm">AI is speaking...</span>
-                </div>
-              )}
-
-              {/* Recording Indicator */}
-              {isRecording && !isThinking && !isSpeaking && (
-                <div className="flex items-center gap-2 text-secondary">
-                  <div
-                    className="w-3 h-3 rounded-full animate-pulse"
-                    style={{ backgroundColor: "#EF4444" }}
-                  />
-                  <span className="text-sm">Listening...</span>
-                </div>
-              )}
-            </div>
-
-            {/* Audio Level Visualization */}
-            <div className="flex items-center justify-center">
-              <div className="flex items-end gap-1 h-8">
-                {[...Array(20)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="w-1 rounded-full transition-all duration-75"
-                    style={{
-                      height: `${Math.max(
-                        4,
-                        audioLevel * 32 * (Math.sin(i * 0.5) + 1)
-                      )}px`,
-                      backgroundColor: isRecording ? "#D95D39" : "#E5E0D8",
-                    }}
-                  />
-                ))}
               </div>
-            </div>
+            )}
 
             {/* Controls */}
             <div className="flex items-center justify-center gap-4">
-              {/* Mute Button */}
               <button
                 onClick={toggleMute}
-                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
-                  isRecording
-                    ? "bg-gray-100 hover:bg-gray-200"
-                    : "bg-red-100 hover:bg-red-200"
+                disabled={audioState !== "listening"}
+                className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                  audioState !== "listening"
+                    ? "bg-slate-200 cursor-not-allowed"
+                    : isMuted
+                    ? "bg-red-100 hover:bg-red-200 border-2 border-red-300"
+                    : "bg-white hover:bg-slate-50 border-2 border-green-400"
                 }`}
               >
-                {isRecording ? (
-                  <Mic className="w-6 h-6 text-gray-700" />
+                {isMuted ? (
+                  <MicOff className="w-7 h-7 text-red-600" />
                 ) : (
-                  <MicOff className="w-6 h-6 text-red-600" />
+                  <Mic className={`w-7 h-7 ${audioState === "listening" ? "text-green-600" : "text-slate-400"}`} />
                 )}
               </button>
 
-              {/* End Call Button */}
               <button
                 onClick={endInterview}
-                className="w-16 h-16 rounded-full flex items-center justify-center bg-red-500 hover:bg-red-600 transition-all"
+                className="w-20 h-20 rounded-full flex items-center justify-center bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 transition-all shadow-lg hover:shadow-xl"
               >
-                <PhoneOff className="w-7 h-7 text-white" />
+                <PhoneOff className="w-8 h-8 text-white" />
               </button>
             </div>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+export default function VoiceInterviewPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <Loader2 className="w-8 h-8 animate-spin text-orange-500" />
+        </div>
+      }
+    >
+      <VoiceInterviewContent />
+    </Suspense>
   );
 }
