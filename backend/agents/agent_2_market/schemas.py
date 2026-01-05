@@ -12,16 +12,110 @@ from pydantic import BaseModel, Field, field_validator
 
 
 # =============================================================================
-# Job / Hackathon Schema (Unified)
+# Job Schema (for jobs table)
 # =============================================================================
 
 class JobSchema(BaseModel):
     """
-    Unified schema for jobs and hackathons.
+    Schema for jobs.
     Matches Supabase 'jobs' table exactly.
     """
     title: str
     company: str = "Unknown"
+    location: Optional[str] = None
+    link: str
+    description: Optional[str] = None
+    summary: Optional[str] = None
+    source: Optional[str] = None
+    posted_at: Optional[Union[date, datetime, str]] = None  # DB: date
+    expiration_date: Optional[Union[date, datetime, str]] = None  # DB: date
+    platform: Optional[str] = None
+    remote_policy: Optional[str] = None
+    type: str = "job"  # DB: text DEFAULT 'job'
+    bounty_amount: Optional[str] = None  # DB: text
+
+    @field_validator('summary', mode='before')
+    @classmethod
+    def truncate_summary(cls, v: str) -> str:
+        if v and len(v) > 1000:
+            return v[:1000]
+        return v or ""
+
+    @field_validator('description', mode='before')
+    @classmethod
+    def truncate_description(cls, v: str) -> str:
+        if v and len(v) > 5000:
+            return v[:5000]
+        return v or ""
+
+    def to_supabase_dict(self) -> dict:
+        """Convert to Supabase-compatible dictionary (without 'id' - auto-generated)."""
+        data = {
+            "title": self.title,
+            "company": self.company,
+            "link": self.link,
+            "type": self.type,
+        }
+        # Optional fields
+        if self.location:
+            data["location"] = self.location
+        if self.description:
+            data["description"] = self.description
+        if self.summary:
+            data["summary"] = self.summary
+        if self.source:
+            data["source"] = self.source
+        if self.platform:
+            data["platform"] = self.platform
+        if self.remote_policy:
+            data["remote_policy"] = self.remote_policy
+        if self.bounty_amount:
+            data["bounty_amount"] = str(self.bounty_amount)
+        # posted_at: DB expects date (YYYY-MM-DD)
+        if self.posted_at:
+            if isinstance(self.posted_at, datetime):
+                data["posted_at"] = self.posted_at.date().isoformat()
+            elif isinstance(self.posted_at, date):
+                data["posted_at"] = self.posted_at.isoformat()
+            elif isinstance(self.posted_at, str):
+                data["posted_at"] = self.posted_at[:10]  # Take YYYY-MM-DD
+        # expiration_date: DB expects date (YYYY-MM-DD)
+        if self.expiration_date:
+            if isinstance(self.expiration_date, datetime):
+                data["expiration_date"] = self.expiration_date.date().isoformat()
+            elif isinstance(self.expiration_date, date):
+                data["expiration_date"] = self.expiration_date.isoformat()
+            elif isinstance(self.expiration_date, str):
+                data["expiration_date"] = self.expiration_date[:10]
+        return data
+
+    def to_pinecone_metadata(self) -> dict:
+        """Convert to Pinecone metadata.
+        Note: supabase_id will be added by the service layer.
+        """
+        return {
+            "type": self.type,
+            "title": self.title,
+            "company": self.company,
+            "link": self.link,
+            "summary": (self.summary[:500] if self.summary else ""),
+            "source": self.source or "",
+            "platform": self.platform or "",
+            "location": self.location or "",
+        }
+
+
+# =============================================================================
+# Hackathon Schema (for hackathons table)
+# =============================================================================
+
+class HackathonSchema(BaseModel):
+    """
+    Schema for hackathons.
+    Matches Supabase 'hackathons' table exactly.
+    """
+    title: str
+    company: str = "Unknown"  # Organizer
     location: str = ""
     link: str
     description: str = ""
@@ -31,8 +125,7 @@ class JobSchema(BaseModel):
     expiration_date: Optional[Union[date, datetime, str]] = None  # DB: date
     platform: str = "Unknown"
     remote_policy: Optional[str] = None
-    bounty_amount: Optional[str] = None  # DB: text (not float)
-    type: Literal["job", "hackathon"] = "job"
+    bounty_amount: Optional[str] = None  # DB: text (prize pool)
 
     @field_validator('summary', mode='before')
     @classmethod
@@ -59,7 +152,6 @@ class JobSchema(BaseModel):
             "summary": self.summary,
             "source": self.source,
             "platform": self.platform,
-            "type": self.type,
         }
         # posted_at: DB expects date (YYYY-MM-DD)
         if self.posted_at:
@@ -89,7 +181,7 @@ class JobSchema(BaseModel):
         Note: supabase_id will be added by the service layer.
         """
         return {
-            "type": self.type,
+            "type": "hackathon",
             "title": self.title,
             "company": self.company,
             "link": self.link,
@@ -97,6 +189,7 @@ class JobSchema(BaseModel):
             "source": self.source,
             "platform": self.platform,
             "location": self.location,
+            "bounty_amount": self.bounty_amount or "",
         }
 
 

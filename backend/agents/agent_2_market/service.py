@@ -29,7 +29,7 @@ from supabase import create_client
 from pinecone import Pinecone, ServerlessSpec
 
 # Import schemas and tools
-from .schemas import JobSchema, MarketNewsSchema, CronExecutionLog
+from .schemas import JobSchema, HackathonSchema, MarketNewsSchema, CronExecutionLog
 from .tools import (
     # Job providers
     search_jsearch_jobs,
@@ -385,12 +385,11 @@ class MarketIntelligenceService:
     
     def _normalize_and_dedupe_jobs(
         self, 
-        raw_items: list[dict], 
-        item_type: str
+        raw_items: list[dict]
     ) -> list[JobSchema]:
         """
         Normalize items into JobSchema and deduplicate by link.
-        Generates consistent UUIDs for Supabase and Pinecone.
+        Checks against existing jobs in the jobs table.
         """
         seen_links = set()
         normalized = []
@@ -421,11 +420,6 @@ class MarketIntelligenceService:
                 except:
                     pass
             
-            # Convert bounty_amount to string if it's a number
-            bounty = item.get("bounty_amount")
-            if bounty is not None:
-                bounty = str(bounty)
-            
             job = JobSchema(
                 title=item.get("title", "Unknown"),
                 company=item.get("company", "Unknown"),
@@ -437,10 +431,67 @@ class MarketIntelligenceService:
                 posted_at=posted_at,
                 platform=item.get("platform", "Unknown"),
                 remote_policy=item.get("remote_policy"),
-                bounty_amount=bounty,
-                type=item_type,
             )
             normalized.append(job)
+        
+        return normalized
+    
+    def _normalize_and_dedupe_hackathons(
+        self, 
+        raw_items: list[dict]
+    ) -> list[HackathonSchema]:
+        """
+        Normalize items into HackathonSchema and deduplicate by link.
+        Checks against existing hackathons in the hackathons table.
+        """
+        seen_links = set()
+        normalized = []
+        
+        # First, check existing links in hackathons table
+        try:
+            existing = self.supabase.table("hackathons").select("link").execute()
+            if existing.data:
+                seen_links.update(item["link"] for item in existing.data if item.get("link"))
+        except:
+            pass
+        
+        for item in raw_items:
+            link = item.get("link", "").strip()
+            if not link or link in seen_links:
+                continue
+            
+            seen_links.add(link)
+            
+            # Parse posted_at - keep as string or convert to date string
+            posted_at = None
+            if item.get("posted_at"):
+                try:
+                    if isinstance(item["posted_at"], str):
+                        posted_at = item["posted_at"]
+                    elif isinstance(item["posted_at"], datetime):
+                        posted_at = item["posted_at"]
+                except:
+                    pass
+            
+            # Convert bounty_amount to string if it's a number
+            bounty = item.get("bounty_amount")
+            if bounty is not None:
+                bounty = str(bounty)
+            
+            hackathon = HackathonSchema(
+                title=item.get("title", "Unknown"),
+                company=item.get("company", "Unknown"),
+                location=item.get("location", ""),
+                link=link,
+                description=item.get("description", ""),
+                summary=item.get("summary", ""),
+                source=item.get("source", ""),
+                posted_at=posted_at,
+                platform=item.get("platform", "Unknown"),
+                remote_policy=item.get("remote_policy"),
+                bounty_amount=bounty,
+            )
+            normalized.append(hackathon)
         
         return normalized
     
@@ -498,7 +549,7 @@ class MarketIntelligenceService:
     # =========================================================================
     
     def _save_jobs_to_supabase(self, jobs: list[JobSchema]) -> list[tuple[int, JobSchema]]:
-        """Save jobs/hackathons to Supabase jobs table.
+        """Save jobs to Supabase jobs table.
         
         Returns:
             List of tuples (supabase_id, job_schema) for saved items.
@@ -518,9 +569,37 @@ class MarketIntelligenceService:
                     supabase_id = response.data[0].get("id")
                     if supabase_id is not None:
                         saved.append((supabase_id, job))
-                        print(f"[Market] Saved {job.type}: ID={supabase_id}, Title={job.title[:50]}")
+                        print(f"[Market] Saved job: ID={supabase_id}, Title={job.title[:50]}")
             except Exception as e:
                 print(f"[Market] Job save error: {str(e)}")
+                continue
+        
+        return saved
+    
+    def _save_hackathons_to_supabase(self, hackathons: list[HackathonSchema]) -> list[tuple[int, HackathonSchema]]:
+        """Save hackathons to Supabase hackathons table.
+        
+        Returns:
+            List of tuples (supabase_id, hackathon_schema) for saved items.
+        """
+        saved = []
+        
+        for hackathon in hackathons:
+            try:
+                data = hackathon.to_supabase_dict()
+                response = self.supabase.table("hackathons").upsert(
+                    data, 
+                    on_conflict="link"
+                ).execute()
+                
+                if response.data and len(response.data) > 0:
+                    # Get the Supabase-generated integer ID
+                    supabase_id = response.data[0].get("id")
+                    if supabase_id is not None:
+                        saved.append((supabase_id, hackathon))
+                        print(f"[Market] Saved hackathon: ID={supabase_id}, Title={hackathon.title[:50]}")
+            except Exception as e:
+                print(f"[Market] Hackathon save error: {str(e)}")
                 continue
         
         return saved
@@ -555,7 +634,7 @@ class MarketIntelligenceService:
     
     def _save_to_pinecone(
         self, 
-        items: list[tuple[int, JobSchema | MarketNewsSchema]],
+        items: list[tuple[int, JobSchema | HackathonSchema | MarketNewsSchema]],
         namespace: str = ""
     ) -> int:
         """
@@ -577,7 +656,7 @@ class MarketIntelligenceService:
                 vector_id = str(supabase_id)
                 
                 # Build embedding text
-                if isinstance(item, JobSchema):
+                if isinstance(item, (JobSchema, HackathonSchema)):
                     text = f"{item.title} at {item.company}. {item.summary}"
                     metadata = item.to_pinecone_metadata()
                     metadata["supabase_id"] = supabase_id  # Store ID in metadata too
@@ -668,19 +747,22 @@ class MarketIntelligenceService:
             raw_news = self._collect_news(optimized_roles, skills)
             
             # Step 8-9: Normalize and deduplicate
-            normalized_jobs = self._normalize_and_dedupe_jobs(raw_jobs, "job")
-            normalized_hackathons = self._normalize_and_dedupe_jobs(raw_hackathons, "hackathon")
+            normalized_jobs = self._normalize_and_dedupe_jobs(raw_jobs)
+            normalized_hackathons = self._normalize_and_dedupe_hackathons(raw_hackathons)
             normalized_news = self._normalize_and_dedupe_news(raw_news)
             
             # Step 10: Save to Supabase
             saved_jobs = self._save_jobs_to_supabase(normalized_jobs)
-            saved_hackathons = self._save_jobs_to_supabase(normalized_hackathons)
+            saved_hackathons = self._save_hackathons_to_supabase(normalized_hackathons)
             saved_news = self._save_news_to_supabase(normalized_news)
             
-            # Save to Pinecone
-            vectors_jobs = self._save_to_pinecone(saved_jobs)
-            vectors_hackathons = self._save_to_pinecone(saved_hackathons)
-            vectors_news = self._save_to_pinecone(saved_news)
+            # Save to Pinecone with proper namespaces
+            # Jobs -> default namespace ("")
+            # Hackathons -> "hackathon" namespace
+            # News -> "news" namespace
+            vectors_jobs = self._save_to_pinecone(saved_jobs, namespace="")
+            vectors_hackathons = self._save_to_pinecone(saved_hackathons, namespace="hackathon")
+            vectors_news = self._save_to_pinecone(saved_news, namespace="news")
             
             # Update result
             result["jobs_stored"] = len(saved_jobs)
@@ -742,22 +824,23 @@ class MarketIntelligenceService:
             vectors_saved = 0
             
             if raw_jobs:
-                normalized = self._normalize_and_dedupe_jobs(raw_jobs, "job")
+                normalized = self._normalize_and_dedupe_jobs(raw_jobs)
                 saved = self._save_jobs_to_supabase(normalized)
                 # saved is now list of (supabase_id, job) tuples
                 result["jobs"] = [{"id": sid, **j.to_supabase_dict()} for sid, j in saved]
-                vectors_saved += self._save_to_pinecone(saved)
+                vectors_saved += self._save_to_pinecone(saved, namespace="")
             
             if raw_hackathons:
-                normalized = self._normalize_and_dedupe_jobs(raw_hackathons, "hackathon")
-                saved = self._save_jobs_to_supabase(normalized)
+                normalized = self._normalize_and_dedupe_hackathons(raw_hackathons)
+                saved = self._save_hackathons_to_supabase(normalized)
                 result["hackathons"] = [{"id": sid, **h.to_supabase_dict()} for sid, h in saved]
-                vectors_saved += self._save_to_pinecone(saved)
+                vectors_saved += self._save_to_pinecone(saved, namespace="hackathon")
                 
             if raw_news:
                 normalized = self._normalize_and_dedupe_news(raw_news)
                 saved = self._save_news_to_supabase(normalized)
                 result["news"] = [{"id": sid, **n.to_supabase_dict()} for sid, n in saved]
+                vectors_saved += self._save_to_pinecone(saved, namespace="news")
 
             result["stats"] = {
                 "jobs_found": len(result["jobs"]),
