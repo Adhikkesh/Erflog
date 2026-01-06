@@ -393,18 +393,21 @@ export default function ProblemSolvingPage() {
     };
 
     return (
-        <div className="min-h-screen p-8" style={{ backgroundColor: "#F0EFE9" }}>
+        <div className="min-h-screen p-8 bg-gray-50">
             <div className="max-w-6xl mx-auto">
                 {/* Header */}
                 <motion.div
                     initial={{ opacity: 0, y: -20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="text-center mb-8"
+                    className="text-center mb-10"
                 >
-                    <h1 className="font-serif-bold text-4xl md:text-5xl mb-4" style={{ color: "#D95D39" }}>
-                        Problem Solving 
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#D95D39] mb-4 shadow-lg">
+                        <Target className="w-8 h-8 text-white" />
+                    </div>
+                    <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-3">
+                        Problem Solving
                     </h1>
-                    <p className="text-lg text-secondary max-w-2xl mx-auto">
+                    <p className="text-lg text-gray-600 max-w-2xl mx-auto">
                         {currentStep === "search" && "Get AI-powered Blind 75 recommendations"}
                         {currentStep === "quiz" && "Swipe through topics and rate your confidence"}
                         {currentStep === "results" && "Your personalized Blind 75 roadmap"}
@@ -418,8 +421,8 @@ export default function ProblemSolvingPage() {
                         animate={{ opacity: 1 }}
                         className="flex flex-col items-center justify-center py-20"
                     >
-                        <Loader2 className="w-8 h-8 animate-spin mb-4" style={{ color: "#D95D39" }} />
-                        <p className="text-secondary">Loading your progress...</p>
+                        <Loader2 className="w-10 h-10 animate-spin mb-4 text-[#D95D39]" />
+                        <p className="text-gray-600 font-medium">Loading your progress...</p>
                     </motion.div>
                 )}
 
@@ -428,27 +431,24 @@ export default function ProblemSolvingPage() {
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="bg-white rounded-2xl p-8 shadow-sm"
-                        style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}
+                        className="bg-white rounded-2xl p-8 shadow-xl border-2 border-gray-200"
                     >
                         <div className="flex flex-col md:flex-row gap-4">
                             <div className="flex-1 relative">
-                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: "#888" }} />
+                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                                 <input
                                     type="text"
                                     placeholder="Enter your LeetCode username..."
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                                    className="w-full pl-12 pr-4 py-3 rounded-lg border text-ink focus:outline-none focus:ring-2 transition-all"
-                                    style={{ borderColor: "#E5E0D8" }}
+                                    className="w-full pl-12 pr-4 py-4 rounded-xl border-2 border-gray-200 text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#D95D39] focus:border-[#D95D39] transition-all text-lg"
                                 />
                             </div>
                             <button
                                 onClick={handleSearch}
                                 disabled={isLoading}
-                                className="px-8 py-3 rounded-lg font-medium text-white transition-all hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-                                style={{ backgroundColor: "#D95D39" }}
+                                className="px-8 py-4 rounded-xl font-bold text-white text-lg transition-all hover:shadow-xl disabled:opacity-50 flex items-center justify-center gap-2 bg-[#D95D39] hover:bg-orange-700 shadow-lg"
                             >
                                 {isLoading ? (
                                     <>
@@ -488,10 +488,9 @@ export default function ProblemSolvingPage() {
                         <motion.div
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className="bg-white rounded-2xl p-6 shadow-sm flex items-center gap-4"
-                            style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}
+                            className="bg-white rounded-2xl p-6 shadow-lg border-2 border-gray-200 flex items-center gap-4"
                         >
-                            <div className="w-16 h-16 rounded-full overflow-hidden" style={{ borderColor: "#D95D39", borderWidth: "2px" }}>
+                            <div className="w-16 h-16 rounded-full overflow-hidden border-4 border-[#D95D39] shadow-md">
                                 <img
                                     src={profile.profile?.userAvatar || "/default-avatar.png"}
                                     alt={profile.username}
@@ -499,17 +498,18 @@ export default function ProblemSolvingPage() {
                                 />
                             </div>
                             <div className="flex-1">
-                                <h2 className="font-serif-bold text-xl text-ink">
+                                <h2 className="text-xl font-bold text-gray-900">
                                     {profile.profile?.realName || profile.username}
                                 </h2>
-                                <p className="text-secondary text-sm">
+                                <p className="text-gray-600 text-sm font-medium">
                                     {getTotalSolved()} problems solved
                                 </p>
                             </div>
                             <div className="text-right">
-                                <p className="text-2xl font-bold" style={{ color: "#D95D39" }}>
+                                <p className="text-3xl font-bold text-[#D95D39]">
                                     {currentCardIndex + 1}/{categories.length}
                                 </p>
+                                <p className="text-xs text-gray-500 font-medium">Progress</p>
                             </div>
                         </motion.div>
 
@@ -545,28 +545,28 @@ export default function ProblemSolvingPage() {
                                     className="absolute w-full max-w-md"
                                 >
                                     <div
-                                        className="bg-white rounded-3xl p-8 shadow-xl"
-                                        style={{ borderColor: currentCategory.color, borderWidth: "3px" }}
+                                        className="bg-white rounded-3xl p-10 shadow-2xl border-4"
+                                        style={{ borderColor: currentCategory.color }}
                                     >
                                         {/* Card Header */}
-                                        <div className="flex items-center gap-4 mb-6">
+                                        <div className="flex items-center gap-4 mb-8">
                                             <div
-                                                className="w-16 h-16 rounded-2xl flex items-center justify-center"
+                                                className="w-20 h-20 rounded-2xl flex items-center justify-center shadow-lg"
                                                 style={{ backgroundColor: `${currentCategory.color}20` }}
                                             >
                                                 {(() => {
                                                     const IconComponent = categoryIcons[currentCategory.icon] || Layers;
-                                                    return <IconComponent className="w-8 h-8" style={{ color: currentCategory.color }} />;
+                                                    return <IconComponent className="w-10 h-10" style={{ color: currentCategory.color }} />;
                                                 })()}
                                             </div>
                                             <div>
-                                                <h3 className="font-serif-bold text-2xl text-ink">{currentCategory.name}</h3>
-                                                <p className="text-secondary">{currentCategory.problems.length} problems</p>
+                                                <h3 className="text-3xl font-bold text-gray-900">{currentCategory.name}</h3>
+                                                <p className="text-gray-600 font-medium">{currentCategory.problems.length} problems</p>
                                             </div>
                                         </div>
 
                                         {/* Question */}
-                                        <p className="text-lg text-ink mb-8 text-center">
+                                        <p className="text-xl text-gray-700 mb-10 text-center font-medium">
                                             How confident are you with <span className="font-bold" style={{ color: currentCategory.color }}>{currentCategory.name}</span> problems?
                                         </p>
 
@@ -686,11 +686,10 @@ export default function ProblemSolvingPage() {
                             <motion.div
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="bg-white rounded-2xl p-8 shadow-sm"
-                                style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}
+                                className="bg-white rounded-2xl p-8 shadow-xl border-2 border-gray-200"
                             >
                                 <div className="flex flex-col md:flex-row items-center gap-6">
-                                    <div className="w-24 h-24 rounded-full overflow-hidden" style={{ borderColor: "#D95D39", borderWidth: "3px" }}>
+                                    <div className="w-24 h-24 rounded-full overflow-hidden border-4 border-[#D95D39] shadow-lg">
                                         <img
                                             src={profile.profile?.userAvatar || "/default-avatar.png"}
                                             alt={profile.username}
@@ -717,31 +716,7 @@ export default function ProblemSolvingPage() {
                             </motion.div>
                         )}
 
-                        {/* Stats */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-xl p-6 shadow-sm" style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}>
-                                <div className="flex items-center gap-3 mb-3">
-                                    <div className="p-2 rounded-lg" style={{ backgroundColor: "#22C55E15" }}><Flame className="w-5 h-5" style={{ color: "#22C55E" }} /></div>
-                                    <span className="text-sm text-secondary">Easy</span>
-                                </div>
-                                <p className="text-2xl font-serif-bold text-ink">{getEasySolved()}</p>
-                            </motion.div>
-                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-white rounded-xl p-6 shadow-sm" style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}>
-                                <div className="flex items-center gap-3 mb-3">
-                                    <div className="p-2 rounded-lg" style={{ backgroundColor: "#F59E0B15" }}><Flame className="w-5 h-5" style={{ color: "#F59E0B" }} /></div>
-                                    <span className="text-sm text-secondary">Medium</span>
-                                </div>
-                                <p className="text-2xl font-serif-bold text-ink">{getMediumSolved()}</p>
-                            </motion.div>
-                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="bg-white rounded-xl p-6 shadow-sm" style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}>
-                                <div className="flex items-center gap-3 mb-3">
-                                    <div className="p-2 rounded-lg" style={{ backgroundColor: "#EF444415" }}><Flame className="w-5 h-5" style={{ color: "#EF4444" }} /></div>
-                                    <span className="text-sm text-secondary">Hard</span>
-                                </div>
-                                <p className="text-2xl font-serif-bold text-ink">{getHardSolved()}</p>
-                            </motion.div>
-                        </div>
-
+                       
                         {/* Blind 75 Progress Tracker */}
                         <motion.div
                             initial={{ opacity: 0, y: 20 }}
@@ -841,12 +816,11 @@ export default function ProblemSolvingPage() {
                                             key={category.name}
                                             initial={{ opacity: 0 }}
                                             animate={{ opacity: 1 }}
-                                            className="rounded-xl overflow-hidden"
-                                            style={{ backgroundColor: "#F9F8F5" }}
+                                            className="rounded-xl overflow-hidden bg-white border-2 border-gray-200 shadow-md hover:shadow-lg transition-shadow"
                                         >
                                             <button
                                                 onClick={() => toggleCategory(category.name)}
-                                                className="w-full flex items-center justify-between p-4 hover:bg-opacity-50 transition-all"
+                                                className="w-full flex items-center justify-between p-5 hover:bg-gray-50 transition-all"
                                             >
                                                 <div className="flex items-center gap-3">
                                                     <div className="p-2 rounded-lg" style={{ backgroundColor: `${category.color}15` }}>
@@ -894,8 +868,7 @@ export default function ProblemSolvingPage() {
                                                                 return (
                                                                     <div
                                                                         key={problem.id}
-                                                                        className={`flex items-center justify-between p-3 rounded-lg bg-white transition-all ${isSolved ? 'opacity-60' : ''}`}
-                                                                        style={{ borderColor: "#E5E0D8", borderWidth: "1px" }}
+                                                                        className={`flex items-center justify-between p-4 rounded-lg bg-white border-2 transition-all hover:shadow-md ${isSolved ? 'opacity-60 border-green-200' : 'border-gray-200 hover:border-[#D95D39]'}`}
                                                                     >
                                                                         <div className="flex items-center gap-3">
                                                                             <button onClick={() => toggleSolved(problem.id)} className="transition-all hover:scale-110">
