@@ -1,14 +1,14 @@
 # Use Ubuntu-based Python image (better Playwright compatibility)
 FROM python:3.11-slim-bookworm
 
-# 1. Install System Dependencies
-# Added 'libreoffice' for DOCX support if needed (replaces docx2pdf)
-# Added 'procps' which is often needed for browser automation to find processes
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     curl \
     procps \
+    # Redis tools for debugging connectivity
+    redis-tools \
     # LaTeX for resume generation (Heavy but necessary)
     texlive-latex-base \
     texlive-fonts-recommended \
@@ -50,8 +50,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # 3. Copy requirements and install Python dependencies
+# Added retries and timeout for network reliability
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
 # 4. Download spaCy English model
 RUN python -m spacy download en_core_web_sm
@@ -69,6 +71,9 @@ ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV GOOGLE_APPLICATION_CREDENTIALS=/app/credential.json
+# Redis configuration (set REDIS_URL in Cloud Run environment variables)
+# Example: redis://hostname:6379 or redis://:password@hostname:6379
+# The app gracefully degrades if Redis is unavailable
 
 # 8. Expose the port
 EXPOSE 8080
