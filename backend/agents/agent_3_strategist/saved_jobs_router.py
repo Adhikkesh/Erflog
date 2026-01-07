@@ -13,6 +13,9 @@ from pydantic import BaseModel
 from supabase import create_client
 import google.generativeai as genai
 
+# Redis cache integration
+from services.cache_service import cache_service
+
 # Initialize
 router = APIRouter(prefix="/api/saved-jobs", tags=["Saved Jobs"])
 
@@ -116,6 +119,10 @@ async def save_job(request: SaveJobRequest):
         raise HTTPException(status_code=500, detail="Failed to save job")
     
     saved_job = result.data[0]
+    
+    # Invalidate list cache (next read will refresh from DB)
+    cache_service.invalidate_saved_jobs(request.user_id)
+    
     return SavedJobResponse(
         id=saved_job["id"],
         user_id=saved_job["user_id"],
@@ -133,14 +140,20 @@ async def save_job(request: SaveJobRequest):
 
 @router.get("/list/{user_id}", response_model=List[SavedJobResponse])
 async def get_saved_jobs(user_id: str):
-    """Get all saved jobs for a user"""
+    """Get all saved jobs for a user. Uses cache-first strategy."""
+    # Try cache first
+    cached = cache_service.get_saved_jobs(user_id)
+    if cached:
+        return [SavedJobResponse(**job) for job in cached]
+    
+    # Cache miss - fetch from DB
     supabase = get_supabase()
     
     result = supabase.table("saved_jobs").select("*").eq(
         "user_id", user_id
     ).order("created_at", desc=True).execute()
     
-    return [
+    jobs = [
         SavedJobResponse(
             id=job["id"],
             user_id=job["user_id"],
@@ -156,6 +169,11 @@ async def get_saved_jobs(user_id: str):
         )
         for job in result.data
     ]
+    
+    # Hydrate cache for future reads
+    cache_service.set_saved_jobs(user_id, [job.dict() for job in jobs])
+    
+    return jobs
 
 
 @router.delete("/remove/{job_id}")
@@ -163,7 +181,15 @@ async def remove_saved_job(job_id: str):
     """Remove a job from saved jobs"""
     supabase = get_supabase()
     
+    # Get user_id before delete for cache invalidation
+    job_result = supabase.table("saved_jobs").select("user_id").eq("id", job_id).execute()
+    user_id = job_result.data[0]["user_id"] if job_result.data else None
+    
     result = supabase.table("saved_jobs").delete().eq("id", job_id).execute()
+    
+    # Invalidate cache
+    if user_id:
+        cache_service.invalidate_saved_jobs(user_id)
     
     return {"status": "success", "message": "Job removed from saved jobs"}
 
@@ -210,6 +236,11 @@ async def update_progress(job_id: str, request: UpdateProgressRequest):
     
     if not update_result.data:
         raise HTTPException(status_code=500, detail="Failed to update progress")
+    
+    # Invalidate user's saved jobs cache
+    user_id = update_result.data[0].get("user_id") if update_result.data else None
+    if user_id:
+        cache_service.invalidate_saved_jobs(user_id)
     
     return {
         "status": "success",
@@ -429,6 +460,10 @@ Return ONLY valid JSON in this exact format:
         raise HTTPException(status_code=500, detail="Failed to save merged roadmap")
     
     saved = result.data[0]
+    
+    # Invalidate global roadmaps cache
+    cache_service.invalidate_global_roadmaps()
+    
     return GlobalRoadmapResponse(
         id=saved["id"],
         name=saved["name"],
@@ -440,12 +475,18 @@ Return ONLY valid JSON in this exact format:
 
 @router.get("/global-roadmaps/{user_id}", response_model=List[GlobalRoadmapResponse])
 async def get_global_roadmaps(user_id: str):
-    """Get all merged roadmaps (global roadmaps don't have user_id currently, returns all)"""
+    """Get all merged roadmaps. Uses cache-first strategy."""
+    # Try cache first
+    cached = cache_service.get_global_roadmaps()
+    if cached:
+        return [GlobalRoadmapResponse(**r) for r in cached]
+    
+    # Cache miss - fetch from DB
     supabase = get_supabase()
     
     result = supabase.table("global_roadmaps").select("*").order("created_at", desc=True).execute()
     
-    return [
+    roadmaps = [
         GlobalRoadmapResponse(
             id=r["id"],
             name=r["name"],
@@ -455,6 +496,11 @@ async def get_global_roadmaps(user_id: str):
         )
         for r in result.data
     ]
+    
+    # Hydrate cache
+    cache_service.set_global_roadmaps([r.dict() for r in roadmaps])
+    
+    return roadmaps
 
 
 @router.get("/global-roadmap/{roadmap_id}", response_model=GlobalRoadmapResponse)
@@ -483,6 +529,9 @@ async def delete_global_roadmap(roadmap_id: str):
     supabase = get_supabase()
     
     supabase.table("global_roadmaps").delete().eq("id", roadmap_id).execute()
+    
+    # Invalidate cache
+    cache_service.invalidate_global_roadmaps()
     
     return {"status": "success", "message": "Roadmap deleted"}
 
@@ -620,3 +669,236 @@ If no new skills were learned (all already exist), return an empty array: []
         "total_skills": len(updated_skills)
     }
 
+
+# =============================================================================
+# Interview Feedback Loop - Roadmap Enhancement
+# =============================================================================
+
+class EnhanceRoadmapFromFeedbackRequest(BaseModel):
+    user_id: str
+    improvements: List[str]  # Areas for improvement from interview feedback
+    interview_id: Optional[str] = None
+    job_context: Optional[dict] = None  # Optional job context for better suggestions
+
+
+class EnhanceRoadmapResponse(BaseModel):
+    status: str
+    message: str
+    additions: List[dict]
+    roadmap_id: Optional[str] = None
+    total_nodes_added: int
+
+
+@router.post("/enhance-roadmap-from-feedback", response_model=EnhanceRoadmapResponse)
+async def enhance_roadmap_from_feedback(request: EnhanceRoadmapFromFeedbackRequest):
+    """
+    Interview Feedback Loop: Enhance Global Roadmap based on interview feedback.
+    
+    Flow:
+    1. Fetch user's latest global roadmap (or create new one if none exists)
+    2. Analyze interview improvement areas using LLM
+    3. Generate new learning blocks that address the gaps
+    4. Merge new blocks into roadmap while keeping existing ones
+    5. Return list of additions for display on feedback page
+    """
+    print(f"[FeedbackLoop] Starting enhancement for user {request.user_id[:8]}...")
+    print(f"[FeedbackLoop] Improvements to address: {request.improvements}")
+    
+    if not request.improvements:
+        return EnhanceRoadmapResponse(
+            status="success",
+            message="No improvement areas provided",
+            additions=[],
+            total_nodes_added=0
+        )
+    
+    supabase = get_supabase()
+    llm = get_llm()
+    
+    # 1. Fetch user's latest global roadmap
+    roadmap_result = supabase.table("global_roadmaps").select("*").order("created_at", desc=True).limit(1).execute()
+    
+    existing_roadmap = None
+    existing_nodes = []
+    roadmap_id = None
+    
+    if roadmap_result.data:
+        existing_roadmap = roadmap_result.data[0]
+        roadmap_id = existing_roadmap["id"]
+        merged_graph = existing_roadmap.get("merged_graph", {})
+        
+        # Extract existing skills/nodes from various possible structures
+        if "skill_categories" in merged_graph:
+            for cat in merged_graph.get("skill_categories", []):
+                for skill in cat.get("skills", []):
+                    existing_nodes.append(skill.get("name", ""))
+        elif "learning_path" in merged_graph:
+            for phase in merged_graph.get("learning_path", []):
+                existing_nodes.extend(phase.get("skills", []))
+        elif "combined_missing_skills" in merged_graph:
+            existing_nodes = merged_graph.get("combined_missing_skills", [])
+        
+        print(f"[FeedbackLoop] Found existing roadmap: {roadmap_id[:8]}... with {len(existing_nodes)} existing nodes")
+    else:
+        print(f"[FeedbackLoop] No existing roadmap found, will create new one")
+    
+    # 2. Prepare the LLM prompt - This is the core of the feedback loop
+    improvements_text = "\n".join([f"- {imp}" for imp in request.improvements])
+    existing_nodes_text = ", ".join(existing_nodes) if existing_nodes else "None yet"
+    job_context_text = ""
+    if request.job_context:
+        job_context_text = f"""
+JOB CONTEXT:
+- Title: {request.job_context.get('title', 'Unknown')}
+- Company: {request.job_context.get('company', 'Unknown')}
+- Key Requirements: {request.job_context.get('requirements', 'Not specified')}
+"""
+
+    enhancement_prompt = f"""You are an expert Career Learning Architect. Your task is to analyze interview feedback and generate NEW learning blocks for a user's development roadmap.
+
+INTERVIEW FEEDBACK - AREAS NEEDING IMPROVEMENT:
+{improvements_text}
+{job_context_text}
+EXISTING SKILLS IN ROADMAP (DO NOT DUPLICATE):
+{existing_nodes_text}
+
+YOUR TASK:
+Based on the interview feedback, create 2-4 NEW, TARGETED learning blocks that directly address the identified improvement areas. Each block should help the user strengthen their weak spots revealed in the interview.
+
+RULES:
+1. DO NOT duplicate any existing skills/nodes
+2. Each block must directly relate to an improvement area
+3. Be specific and actionable (e.g., "System Design Fundamentals" not just "Design")
+4. Include practical resources like documentation, tutorials, and practice platforms
+5. Blocks should be achievable in 2-8 hours each
+6. Prioritize based on how critical the skill gap is
+
+OUTPUT FORMAT (JSON ONLY, NO MARKDOWN):
+{{
+    "analysis": "Brief 1-sentence explanation of the main gaps identified",
+    "new_blocks": [
+        {{
+            "id": "feedback_block_1",
+            "label": "Specific Topic to Learn",
+            "type": "concept" | "practice" | "project",
+            "description": "What this block covers and why it addresses the feedback",
+            "priority": "high" | "medium" | "low",
+            "estimated_hours": 4,
+            "improvement_addressed": "Which specific improvement this addresses",
+            "resources": [
+                {{"name": "Resource Name", "url": "https://...", "type": "documentation"}},
+                {{"name": "Practice Platform", "url": "https://...", "type": "practice"}},
+                {{"name": "Video Tutorial", "url": "https://youtube.com/...", "type": "video"}}
+            ]
+        }}
+    ]
+}}
+
+Generate learning blocks that will genuinely help this person improve for their next interview."""
+
+    try:
+        print(f"[FeedbackLoop] Calling Gemini LLM for enhancement...")
+        response = llm.generate_content(enhancement_prompt)
+        response_text = response.text.strip()
+        
+        # Clean markdown if present
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+        
+        enhancement_result = json.loads(response_text)
+        new_blocks = enhancement_result.get("new_blocks", [])
+        analysis = enhancement_result.get("analysis", "")
+        
+        print(f"[FeedbackLoop] LLM generated {len(new_blocks)} new blocks")
+        print(f"[FeedbackLoop] Analysis: {analysis}")
+        
+    except json.JSONDecodeError as e:
+        print(f"[FeedbackLoop] JSON Parse Error: {e}")
+        print(f"[FeedbackLoop] Raw response: {response.text[:300]}...")
+        
+        # Fallback: Create basic blocks from improvements
+        new_blocks = []
+        for i, imp in enumerate(request.improvements[:3]):
+            new_blocks.append({
+                "id": f"feedback_block_{i+1}",
+                "label": f"Improve: {imp[:50]}",
+                "type": "practice",
+                "description": f"Address the improvement area: {imp}",
+                "priority": "high",
+                "estimated_hours": 4,
+                "improvement_addressed": imp,
+                "resources": [
+                    {"name": "Search for tutorials", "url": f"https://www.google.com/search?q={imp.replace(' ', '+')}+tutorial", "type": "search"}
+                ]
+            })
+        analysis = "Created basic learning blocks from interview feedback"
+        
+    except Exception as e:
+        print(f"[FeedbackLoop] LLM Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate roadmap enhancements: {str(e)}")
+    
+    # 3. Update or create the global roadmap
+    if existing_roadmap:
+        # Merge new blocks into existing roadmap
+        merged_graph = existing_roadmap.get("merged_graph", {})
+        
+        # Add new blocks to the roadmap structure
+        if "feedback_enhancements" not in merged_graph:
+            merged_graph["feedback_enhancements"] = []
+        
+        # Add timestamp and source to new blocks
+        for block in new_blocks:
+            block["added_from"] = "interview_feedback"
+            block["added_at"] = datetime.now().isoformat()
+            if request.interview_id:
+                block["interview_id"] = request.interview_id
+        
+        merged_graph["feedback_enhancements"].extend(new_blocks)
+        merged_graph["last_enhanced_at"] = datetime.now().isoformat()
+        
+        # Update the roadmap
+        update_result = supabase.table("global_roadmaps").update({
+            "merged_graph": merged_graph
+        }).eq("id", roadmap_id).execute()
+        
+        if not update_result.data:
+            raise HTTPException(status_code=500, detail="Failed to update roadmap")
+        
+        print(f"[FeedbackLoop] Updated existing roadmap with {len(new_blocks)} new blocks")
+        
+    else:
+        # Create a new global roadmap with the enhancement blocks
+        new_roadmap = {
+            "name": "Learning Roadmap (From Interview Feedback)",
+            "merged_graph": {
+                "title": "Interview-Based Learning Plan",
+                "description": "Personalized learning roadmap generated from interview feedback",
+                "created_at": datetime.now().isoformat(),
+                "feedback_enhancements": new_blocks,
+                "analysis": analysis
+            },
+            "source_job_ids": []
+        }
+        
+        insert_result = supabase.table("global_roadmaps").insert(new_roadmap).execute()
+        
+        if not insert_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create new roadmap")
+        
+        roadmap_id = insert_result.data[0]["id"]
+        print(f"[FeedbackLoop] Created new roadmap {roadmap_id[:8]}... with {len(new_blocks)} blocks")
+    
+    # Invalidate cache
+    cache_service.invalidate_global_roadmaps()
+    
+    # 4. Return the additions for display
+    return EnhanceRoadmapResponse(
+        status="success",
+        message=f"🎯 Added {len(new_blocks)} new learning blocks to your roadmap based on interview feedback!",
+        additions=new_blocks,
+        roadmap_id=roadmap_id,
+        total_nodes_added=len(new_blocks)
+    )
